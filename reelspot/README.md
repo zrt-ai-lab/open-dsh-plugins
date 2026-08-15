@@ -16,7 +16,7 @@ A zero-dependency browser screen recorder — one-click screen / window / tab ca
 - 📼 **MP4 优先** — H.264 + AAC（Chrome/Edge 126+），自动回退 WebM；回退时可一键 **ffmpeg 转 MP4**（Host 端）
 - 🎤 **麦克风混音** — `AudioContext` 将标签页/系统音频与麦克风混成一条音轨
 - 🔍 **放大聚焦** — canvas 实时管线：光标移动时平滑放大跟随（默认 1.8×），静止后缩回全景；录制中 **Alt+滚轮** 实时调倍数（1× = 整页全景，最高 3.5×），放大时右上角显示**取景小地图**（整页缩略 + 黄框标记当前取景范围 + 倍数角标）
-- 🖥️ **操作者监视窗** — 录制**本标签页**且开启合成类功能（聚焦/光标/摄像头）时，弹出 Document PiP 悬浮小窗实时显示正在录制的合成画面（帧块传输，独立顶层窗口不会被录进视频），取景调整所见即所得；录整个屏幕/窗口时自动不显示（避免镜像递归）
+- 🖥️ **操作者监视窗** — 录制**本标签页**时，工具栏出现 🖥️ 按钮，点开一个 Document PiP 悬浮小窗实时显示正在录制的合成画面（canvas 帧块传输，独立顶层窗口不会被录进视频），取景调整所见即所得；录整个屏幕/窗口时提示不可用（避免镜像递归）
 - 🖱️ **光标高亮 + 点击波纹** — 演示视频更清晰（仅录本标签页时跟踪光标）
 - 📹 **摄像头气泡** — Recordly 风格圆形 webcam 画中画（位置/大小可配）
 - ⏱️ **倒计时 + 暂停/继续** — 3-2-1 开录，录制中可暂停（时长统计扣除暂停段）
@@ -70,8 +70,8 @@ const recorder = ReelSpot.createRecorder(options?)
 | `zoomMax` | `3.5` | 滚轮可调的倍数上限 |
 | `zoomStep` | `0.2` | 滚轮每格步进 |
 | `zoomMinimap` | `true` | 放大时显示取景小地图（缩略图 + 视口框 + 倍数角标） |
-| `operatorPreview` | `true` | 把合成画面接入 `previewWindow` 监视窗 |
-| `previewWindow` | `null` | 调用方在点击手势里 `documentPictureInPicture.requestWindow()` 打开的窗口，核心会把合成画面接进去并在结束时关闭 |
+| `operatorPreview` | `true` | 允许把合成画面接入监视窗 |
+| `previewWindow` | `null` | 可选：调用方传入的 Document PiP 窗口（也可录制中调用 `recorder.attachPreviewWindow(win)`，注意 `requestWindow()` 会消耗用户激活，不能在 `getDisplayMedia` 之前调用） |
 | `cursorFx` | `false` | 光标高亮圈 + 点击波纹 |
 | `countdown` | `3` | 开录前倒计时秒数（0 = 关闭） |
 | `frameRate` | `30` | 帧率 |

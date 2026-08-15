@@ -178,7 +178,7 @@ const ReelSpot = (() => {
     document.addEventListener('mouseleave', onLeave)
     if (opts.zoomWheel) document.addEventListener('wheel', onWheel, { passive: false })
 
-    const pipe = { video, camVideo, cam, canvas, raf: 0, stream: null, dead: false, detach: null, emitError: opts.onError || null }
+    const pipe = { video, camVideo, cam, canvas, raf: 0, stream: null, dead: false, detach: null, surface: '' }
     pipe.detach = () => {
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mousedown', onDown)
@@ -301,39 +301,46 @@ const ReelSpot = (() => {
     try { pipe.stream = canvas.captureStream(opts.frameRate) } catch (e) { pipe.stream = null }
     if (!pipe.stream) { destroyComposePipe(pipe); return null }
 
-    // operator preview: blit the composed canvas into a canvas inside the
-    // Document PiP window (frame blit, no media pipeline — MediaStream
-    // playback inside PiP documents renders black on some Chrome versions).
-    // Only for TAB capture: with window/screen capture the PiP window itself
-    // would be recorded (infinite mirror), so it stays closed there.
-    let surface = ''
-    try { surface = String(srcTrack.getSettings ? srcTrack.getSettings().displaySurface || '' : '') } catch (e) {}
-    if (opts.operatorPreview && opts.previewWindow && surface === 'browser') {
-      try {
-        const doc = opts.previewWindow.document
-        doc.documentElement.style.cssText = 'height:100%;margin:0'
-        doc.body.style.cssText = 'height:100%;margin:0;background:#000;overflow:hidden'
-        const pc = doc.createElement('canvas')
-        const pw = 360
-        const ph = Math.max(2, Math.round((h / w) * pw))
-        pc.width = pw
-        pc.height = ph
-        pc.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;background:#000'
-        doc.body.append(pc)
-        pipe.previewCtx = pc.getContext('2d')
-        pipe.previewW = pw
-        pipe.previewH = ph
-        pipe.previewFrame = 0
-        pipe.previewWin = opts.previewWindow
-        opts.previewWindow.addEventListener('pagehide', () => { pipe.previewWin = null; pipe.previewCtx = null })
-      } catch (e) { /* preview is best-effort */ }
-    } else if (opts.previewWindow) {
-      closePreviewWindow(opts.previewWindow)
-      if (surface && surface !== 'browser' && typeof pipe.emitError === 'function') {
-        pipe.emitError(new Error('监视窗仅在录制本标签页时可用（录屏幕/窗口会被录进画面）'))
-      }
-    }
+    // remember the capture surface for the preview guard
+    try { pipe.surface = String(srcTrack.getSettings ? srcTrack.getSettings().displaySurface || '' : '') } catch (e) { pipe.surface = '' }
+    if (opts.operatorPreview && opts.previewWindow) attachPreview(pipe, opts.previewWindow)
+    else if (opts.previewWindow) closePreviewWindow(opts.previewWindow)
     return pipe
+  }
+
+  /**
+   * Attach the operator preview monitor to a running pipe: blit the composed
+   * canvas into a canvas inside a Document PiP window (frame blit, no media
+   * pipeline — MediaStream playback inside PiP documents renders black on
+   * some Chrome versions). Only for TAB capture: with window/screen capture
+   * the PiP window itself would be recorded (infinite mirror). Returns
+   * whether the preview is now live; the window is closed when not usable.
+   */
+  function attachPreview(pipe, win) {
+    if (!pipe || !pipe.stream || !win) { closePreviewWindow(win); return false }
+    if (pipe.surface && pipe.surface !== 'browser') { closePreviewWindow(win); return false }
+    try {
+      const doc = win.document
+      doc.documentElement.style.cssText = 'height:100%;margin:0'
+      doc.body.style.cssText = 'height:100%;margin:0;background:#000;overflow:hidden'
+      const pc = doc.createElement('canvas')
+      const pw = 360
+      const ph = Math.max(2, Math.round((pipe.canvas.height / pipe.canvas.width) * pw))
+      pc.width = pw
+      pc.height = ph
+      pc.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;background:#000'
+      doc.body.append(pc)
+      pipe.previewCtx = pc.getContext('2d')
+      pipe.previewW = pw
+      pipe.previewH = ph
+      pipe.previewFrame = 0
+      pipe.previewWin = win
+      win.addEventListener('pagehide', () => { pipe.previewWin = null; pipe.previewCtx = null })
+      return true
+    } catch (e) {
+      closePreviewWindow(win)
+      return false
+    }
   }
 
   function closePreviewWindow(win) {
@@ -481,11 +488,7 @@ const ReelSpot = (() => {
       const needsPipe = !!(opts.zoom || opts.cursorFx || opts.webcam)
       let pipe = null
       if (needsPipe) {
-        try {
-          pipe = await createComposePipe(display, Object.assign({}, opts, {
-            onError: (e) => emit('error', e),
-          }))
-        } catch (e) { pipe = null }
+        try { pipe = await createComposePipe(display, opts) } catch (e) { pipe = null }
       }
       if (opts.webcam && (!pipe || !pipe.cam)) {
         emit('error', new Error('ReelSpot: webcam unavailable, recording without it'))
@@ -601,6 +604,18 @@ const ReelSpot = (() => {
 
     function getState() { return active ? active.phase : 'idle' }
 
+    /**
+     * Attach a Document PiP monitor window to the RUNNING recorder.
+     * Call from a user gesture (requestWindow consumes transient activation,
+     * so it cannot be opened around getDisplayMedia). Returns whether the
+     * preview is now live; the window is closed when not usable.
+     */
+    function attachPreviewWindow(win) {
+      const rec = active
+      if (!rec || !rec.pipe) { closePreviewWindow(win); return false }
+      return attachPreview(rec.pipe, win)
+    }
+
     function on(ev, fn) {
       if (!listeners[ev] || typeof fn !== 'function') return () => {}
       listeners[ev].push(fn)
@@ -610,7 +625,7 @@ const ReelSpot = (() => {
       }
     }
 
-    return { start, stop, pause, resume, getState, on }
+    return { start, stop, pause, resume, getState, attachPreviewWindow, on }
   }
 
   return { createRecorder, pickFormat, isSupported }

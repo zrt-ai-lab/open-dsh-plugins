@@ -97,6 +97,7 @@ return {
       const [cursorFxOn, setCursorFxOn] = React.useState(false)
       const [items, setItems] = React.useState([])
       const [warn, setWarn] = React.useState('')
+      const [canMonitor, setCanMonitor] = React.useState(false) // compose pipeline + PiP support
       const [panelOpen, setPanelOpen] = React.useState(false)
       const recRef = React.useRef(null)
       const startRef = React.useRef(false) // start-in-flight guard (picker open / countdown)
@@ -121,28 +122,21 @@ return {
       const start = async () => {
         if (startRef.current) return
         startRef.current = true
-        // operator preview: Document PiP monitor, opened inside the click's
-        // transient activation; NOT captured when recording this tab
-        let previewWindow = null
-        if ((zoomRef.current || cursorFxRef.current || webcamRef.current)
-          && typeof documentPictureInPicture !== 'undefined') {
-          try {
-            previewWindow = await documentPictureInPicture.requestWindow({ width: 360, height: 220 })
-          } catch (e) { previewWindow = null }
-        }
+        const composeOn = zoomRef.current || cursorFxRef.current || webcamRef.current
+        setCanMonitor(!!composeOn && typeof documentPictureInPicture !== 'undefined')
         const recorder = ReelSpot.createRecorder({
           mic: micRef.current,
           zoom: zoomRef.current,
           webcam: webcamRef.current,
           cursorFx: cursorFxRef.current,
           countdown: 3,
-          previewWindow,
         })
         recRef.current = recorder
         recorder.on('countdown', (n) => setCountNum(n))
         recorder.on('stop', (result) => {
           recRef.current = null
           setState('idle')
+          setCanMonitor(false)
           setElapsed(0)
           elapsedBaseRef.current = 0
           const item = {
@@ -170,7 +164,7 @@ return {
             elapsedBaseRef.current = elapsedRefNow()
             setState('paused')
           } else if (s === 'countdown') setState('countdown')
-          else if (s === 'idle') setState('idle')
+          else if (s === 'idle') { setState('idle'); setCanMonitor(false) }
         })
         recorder.on('error', (e) => {
           console.error('ReelSpot:', e && e.message ? e.message : e)
@@ -181,9 +175,23 @@ return {
         if (!begun && recorder.getState() === 'idle') {
           recRef.current = null
           setState('idle')
-          if (previewWindow) { try { previewWindow.close() } catch (e) {} }
+          setCanMonitor(false)
         }
         startRef.current = false
+      }
+
+      // operator monitor: opened from THIS click (requestWindow consumes the
+      // transient activation, so it must not be opened around getDisplayMedia)
+      const openMonitor = async () => {
+        const recorder = recRef.current
+        if (!recorder || typeof documentPictureInPicture === 'undefined') return
+        try {
+          const win = await documentPictureInPicture.requestWindow({ width: 360, height: 220 })
+          if (!recorder.attachPreviewWindow(win)) {
+            setWarn('⚠️ 监视窗仅在录制本标签页时可用')
+            ctx.timeout(() => setWarn(''), 5000)
+          }
+        } catch (e) { /* user dismissed the window request */ }
       }
 
       const stop = () => {
@@ -342,6 +350,13 @@ return {
           tog(webcamOn, setWebcamOn, webcamOn ? '摄像头气泡：开（点击关闭）' : '摄像头气泡：关（点击开启）', '📹'),
           tog(micOn, setMicOn, micOn ? '麦克风：开（点击关闭）' : '麦克风：关（点击开启）', '🎤'),
           pauseButton,
+          (recording || paused) && canMonitor
+            ? React.createElement('button', {
+                className: 'reelspot-tog',
+                title: '打开监视窗：悬浮小窗实时显示正在录制的合成画面（不会被录进视频，仅录本标签页时可用）',
+                onClick: openMonitor,
+              }, '🖥️')
+            : null,
           mainButton,
           warn ? React.createElement('span', { className: 'reelspot-warn' }, warn) : null,
         ),
