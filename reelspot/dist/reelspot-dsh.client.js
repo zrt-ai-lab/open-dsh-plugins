@@ -299,16 +299,95 @@ const ReelSpot = (() => {
   }
 
   /**
+   * Attach an in-page floating monitor: a fixed-position canvas overlay in the
+   * recording document. Fallback for when a Document PiP window cannot be
+   * opened (unsupported, blocked, or no transient activation left).
+   *
+   * Honest limitation: this overlay lives in the recorded document, so TAB
+   * capture DOES record it — there is no way to show pixels to the operator
+   * inside the very surface being captured without capturing them too.
+   * It is therefore refused for 'browser' capture unless the caller passes
+   * allowUnsafe. For 'window'/'monitor' capture of something else, the DSH
+   * tab is not the recorded surface, so the overlay stays private.
+   */
+  function attachInlineMonitor(pipe, doc, allowUnsafe) {
+    if (!pipe || !pipe.stream || !doc) return false
+    if (!allowUnsafe && pipe.surface === 'browser') return false
+    try {
+      const host = doc.createElement('div')
+      host.setAttribute('data-reelspot-monitor', '1')
+      host.style.cssText = [
+        'position:fixed', 'right:16px', 'bottom:16px', 'z-index:2147483647',
+        'width:320px', 'border-radius:10px', 'overflow:hidden',
+        'box-shadow:0 8px 28px rgba(0,0,0,.5)', 'border:1px solid rgba(255,255,255,.25)',
+        'background:#000', 'cursor:move', 'user-select:none',
+      ].join(';')
+      const pw = 320
+      const ph = Math.max(2, Math.round((pipe.canvas.height / pipe.canvas.width) * pw))
+      const pc = doc.createElement('canvas')
+      pc.width = pw
+      pc.height = ph
+      pc.style.cssText = 'display:block;width:100%;height:auto'
+      host.append(pc)
+      doc.body.append(host)
+
+      // drag to reposition
+      let dx = 0
+      let dy = 0
+      let dragging = false
+      const onDown = (ev) => {
+        dragging = true
+        const r = host.getBoundingClientRect()
+        dx = ev.clientX - r.left
+        dy = ev.clientY - r.top
+        ev.preventDefault()
+      }
+      const onMove = (ev) => {
+        if (!dragging) return
+        host.style.right = 'auto'
+        host.style.bottom = 'auto'
+        host.style.left = (ev.clientX - dx) + 'px'
+        host.style.top = (ev.clientY - dy) + 'px'
+      }
+      const onUp = () => { dragging = false }
+      host.addEventListener('mousedown', onDown)
+      doc.addEventListener('mousemove', onMove)
+      doc.addEventListener('mouseup', onUp)
+
+      pipe.previewCtx = pc.getContext('2d')
+      pipe.previewW = pw
+      pipe.previewH = ph
+      pipe.previewFrame = 0
+      pipe.previewHost = host
+      pipe.previewDetach = () => {
+        doc.removeEventListener('mousemove', onMove)
+        doc.removeEventListener('mouseup', onUp)
+        try { host.remove() } catch (e) {}
+      }
+      return true
+    } catch (e) {
+      return false
+    }
+  }
+
+  /**
    * Attach the operator preview monitor to a running pipe: blit the composed
    * canvas into a canvas inside a Document PiP window (frame blit, no media
    * pipeline — MediaStream playback inside PiP documents renders black on
-   * some Chrome versions). Only for TAB capture: with window/screen capture
-   * the PiP window itself would be recorded (infinite mirror). Returns
-   * whether the preview is now live; the window is closed when not usable.
+   * some Chrome versions).
+   *
+   * Capture-surface safety:
+   *   'browser' (tab)    — safe: a PiP window is not part of the tab surface
+   *   'window'           — safe: window capture records that window's own
+   *                        surface, not other windows floating above it
+   *   'monitor' (screen) — UNSAFE on a single display: the monitor window sits
+   *                        on the captured screen. Allowed only when the
+   *                        caller passes allowUnsafe (operator can drag it to
+   *                        a second display).
    */
-  function attachPreview(pipe, win) {
+  function attachPreview(pipe, win, allowUnsafe) {
     if (!pipe || !pipe.stream || !win) { closePreviewWindow(win); return false }
-    if (pipe.surface && pipe.surface !== 'browser') { closePreviewWindow(win); return false }
+    if (!allowUnsafe && pipe.surface === 'monitor') { closePreviewWindow(win); return false }
     try {
       const doc = win.document
       doc.documentElement.style.cssText = 'height:100%;margin:0'
@@ -343,6 +422,7 @@ const ReelSpot = (() => {
     pipe.dead = true
     try { cancelAnimationFrame(pipe.raf) } catch (e) {}
     try { pipe.detach() } catch (e) {}
+    if (pipe.previewDetach) { try { pipe.previewDetach() } catch (e) {} }
     closePreviewWindow(pipe.previewWin)
     stopStream(pipe.stream)
     stopStream(pipe.cam)
@@ -377,7 +457,7 @@ const ReelSpot = (() => {
    */
   function createRecorder(options) {
     const opts = Object.assign({}, DEFAULTS, options || {})
-    const listeners = { state: [], countdown: [], stop: [], error: [] }
+    const listeners = { state: [], countdown: [], stop: [], error: [], monitor: [] }
     const emit = (ev, arg) => {
       listeners[ev].slice().forEach((fn) => { try { fn(arg) } catch (e) {} })
     }
@@ -489,13 +569,27 @@ const ReelSpot = (() => {
       // confirmed, so the page may still hold transient activation, and this
       // runs BEFORE the countdown so the monitor is live while framing.
       // requestWindow() must never run before getDisplayMedia — it consumes
-      // the activation that the picker itself needs.
-      if (opts.operatorPreview && opts.autoMonitor && pipe && pipe.stream && !pipe.previewWin
-        && pipe.surface === 'browser' && typeof documentPictureInPicture !== 'undefined') {
-        try {
-          const win = await documentPictureInPicture.requestWindow({ width: 380, height: 240 })
-          attachPreview(pipe, win)
-        } catch (e) { /* no activation left — the UI keeps a manual monitor button */ }
+      // the activation that the picker itself needs. Every failure is
+      // reported through 'monitor' so the UI can explain and offer a retry.
+      if (opts.operatorPreview && opts.autoMonitor && pipe && pipe.stream && !pipe.previewCtx) {
+        if (typeof documentPictureInPicture === 'undefined') {
+          emit('monitor', { ok: false, reason: 'unsupported', surface: pipe.surface })
+        } else if (pipe.surface === 'monitor') {
+          emit('monitor', { ok: false, reason: 'fullscreen', surface: pipe.surface })
+        } else {
+          try {
+            const win = await documentPictureInPicture.requestWindow({ width: 380, height: 240 })
+            const ok = attachPreview(pipe, win)
+            emit('monitor', { ok, reason: ok ? '' : 'attach-failed', surface: pipe.surface })
+          } catch (e) {
+            emit('monitor', {
+              ok: false,
+              reason: 'blocked',
+              surface: pipe.surface,
+              message: String(e && e.message ? e.message : e),
+            })
+          }
+        }
       }
 
       const hasSysAudio = display.getAudioTracks().length > 0
@@ -613,15 +707,37 @@ const ReelSpot = (() => {
      * so it cannot be opened around getDisplayMedia). Returns whether the
      * preview is now live; the window is closed when not usable.
      */
-    function attachPreviewWindow(win) {
+    function attachPreviewWindow(win, allowUnsafe) {
       const rec = active
       if (!rec || !rec.pipe) { closePreviewWindow(win); return false }
-      return attachPreview(rec.pipe, win)
+      return attachPreview(rec.pipe, win, allowUnsafe)
+    }
+
+    /**
+     * Fallback monitor rendered inside the page itself (no PiP required).
+     * Pass allowUnsafe to accept that TAB capture records the overlay too.
+     */
+    function attachInlineMonitorNow(allowUnsafe) {
+      const rec = active
+      if (!rec || !rec.pipe) return false
+      if (rec.pipe.previewCtx) return true
+      return attachInlineMonitor(rec.pipe, typeof document !== 'undefined' ? document : null, allowUnsafe)
+    }
+
+    /** Remove whichever monitor is currently attached. */
+    function detachMonitor() {
+      const rec = active
+      if (!rec || !rec.pipe) return
+      if (rec.pipe.previewDetach) { try { rec.pipe.previewDetach() } catch (e) {} }
+      closePreviewWindow(rec.pipe.previewWin)
+      rec.pipe.previewDetach = null
+      rec.pipe.previewWin = null
+      rec.pipe.previewCtx = null
     }
 
     /** Whether the operator monitor is currently attached and live. */
     function hasMonitor() {
-      return !!(active && active.pipe && active.pipe.previewWin)
+      return !!(active && active.pipe && active.pipe.previewCtx)
     }
 
     /** Capture surface of the running recording: 'browser' | 'window' | 'monitor' | ''. */
@@ -638,7 +754,7 @@ const ReelSpot = (() => {
       }
     }
 
-    return { start, stop, pause, resume, getState, attachPreviewWindow, hasMonitor, getSurface, on }
+    return { start, stop, pause, resume, getState, attachPreviewWindow, attachInlineMonitorNow, detachMonitor, hasMonitor, getSurface, on }
   }
 
   return { createRecorder, pickFormat, isSupported }
@@ -817,35 +933,55 @@ return {
           setWarn(warnText(e))
           ctx.timeout(() => setWarn(''), 5000)
         })
+        recorder.on('monitor', (info) => {
+          console.log('ReelSpot monitor:', info)
+          if (info.ok) { setCanMonitor(false); return }
+          setCanMonitor(true)
+          if (info.surface !== 'browser' && recorder.attachInlineMonitorNow(false)) {
+            setCanMonitor(false)
+            setWarn('ℹ️ 悬浮窗打开失败，已改用页内监视框')
+          } else if (info.reason === 'unsupported') {
+            setWarn('⚠️ 浏览器不支持悬浮监视窗')
+          } else {
+            setWarn('⚠️ 监视窗未自动打开（' + info.reason + '），点 🖥️ 打开')
+          }
+          ctx.timeout(() => setWarn(''), 8000)
+        })
         const begun = await recorder.start()
         if (!begun && recorder.getState() === 'idle') {
           recRef.current = null
           setState('idle')
           setCanMonitor(false)
         } else if (begun) {
-          const surface = recorder.getSurface()
           if (recorder.hasMonitor()) setCanMonitor(false)
-          else if (surface && surface !== 'browser') {
-            setCanMonitor(false)
-            setWarn('⚠️ 监视窗仅在录制「此标签页」时可用')
-            ctx.timeout(() => setWarn(''), 6000)
-          }
         }
         startRef.current = false
       }
 
-      // manual fallback when the automatic open had no user activation left
+      // manual fallback / explicit opt-in, with in-page monitor as last resort
       const openMonitor = async () => {
         const recorder = recRef.current
-        if (!recorder || typeof documentPictureInPicture === 'undefined') return
+        if (!recorder) return
+        if (typeof documentPictureInPicture === 'undefined') {
+          if (recorder.attachInlineMonitorNow(true)) setCanMonitor(false)
+          return
+        }
         try {
           const win = await documentPictureInPicture.requestWindow({ width: 380, height: 240 })
-          if (recorder.attachPreviewWindow(win)) setCanMonitor(false)
+          if (recorder.attachPreviewWindow(win, true)) setCanMonitor(false)
           else {
-            setWarn('⚠️ 监视窗仅在录制「此标签页」时可用')
-            ctx.timeout(() => setWarn(''), 6000)
+            setWarn('⚠️ 监视窗打开失败（录制已结束？）')
+            ctx.timeout(() => setWarn(''), 5000)
           }
-        } catch (e) { /* user dismissed the window request */ }
+        } catch (e) {
+          if (recorder.attachInlineMonitorNow(true)) {
+            setCanMonitor(false)
+            setWarn('ℹ️ 已改用页内监视框')
+          } else {
+            setWarn('⚠️ 监视窗打开失败：' + String(e && e.message ? e.message : e).slice(0, 60))
+          }
+          ctx.timeout(() => setWarn(''), 6000)
+        }
       }
 
       const stop = () => {

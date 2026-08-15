@@ -171,22 +171,33 @@ function ReelSpotButton(ctx) {
         setWarn(warnText(e))
         ctx.timeout(() => setWarn(''), 5000)
       })
+      // monitor outcome: explain the failure and fall back to the in-page
+      // floating monitor so an operator always gets a live view
+      recorder.on('monitor', (info) => {
+        console.log('ReelSpot monitor:', info)
+        if (info.ok) { setCanMonitor(false); return }
+        setCanMonitor(true)
+        // in-page fallback is only private when the recorded surface is NOT
+        // this tab; for tab capture it would land in the video, so we only
+        // offer it behind the explicit 🖥️ button
+        if (info.surface !== 'browser' && recorder.attachInlineMonitorNow(false)) {
+          setCanMonitor(false)
+          setWarn('ℹ️ 悬浮窗打开失败，已改用页内监视框')
+        } else if (info.reason === 'unsupported') {
+          setWarn('⚠️ 浏览器不支持悬浮监视窗')
+        } else {
+          setWarn('⚠️ 监视窗未自动打开（' + info.reason + '），点 🖥️ 打开')
+        }
+        ctx.timeout(() => setWarn(''), 8000)
+      })
       const begun = await recorder.start()
       if (!begun && recorder.getState() === 'idle') {
         recRef.current = null
         setState('idle') // picker or countdown cancelled
         setCanMonitor(false)
       } else if (begun) {
-        // the monitor auto-opened after the picker when activation allowed it;
-        // only offer the manual button when it is not live, and explain why
-        // screen/window capture cannot have one
-        const surface = recorder.getSurface()
+        // monitor outcome is reported through the 'monitor' event above
         if (recorder.hasMonitor()) setCanMonitor(false)
-        else if (surface && surface !== 'browser') {
-          setCanMonitor(false)
-          setWarn('⚠️ 监视窗仅在录制「此标签页」时可用')
-          ctx.timeout(() => setWarn(''), 6000)
-        }
       }
       startRef.current = false
     }
@@ -195,15 +206,31 @@ function ReelSpotButton(ctx) {
     // transient activation, so it must not be opened around getDisplayMedia)
     const openMonitor = async () => {
       const recorder = recRef.current
-      if (!recorder || typeof documentPictureInPicture === 'undefined') return
+      if (!recorder || typeof documentPictureInPicture === 'undefined') {
+        // no PiP at all — in-page monitor is the only option
+        const rec = recRef.current
+        if (rec && rec.attachInlineMonitorNow(true)) setCanMonitor(false)
+        return
+      }
       try {
         const win = await documentPictureInPicture.requestWindow({ width: 380, height: 240 })
-        if (recorder.attachPreviewWindow(win)) setCanMonitor(false)
+        // allowUnsafe: an explicit click means the operator accepts that a
+        // full-screen recording will contain the monitor unless moved off-screen
+        if (recorder.attachPreviewWindow(win, true)) setCanMonitor(false)
         else {
-          setWarn('⚠️ 监视窗仅在录制「此标签页」时可用')
-          ctx.timeout(() => setWarn(''), 6000)
+          setWarn('⚠️ 监视窗打开失败（录制已结束？）')
+          ctx.timeout(() => setWarn(''), 5000)
         }
-      } catch (e) { /* user dismissed the window request */ }
+      } catch (e) {
+        // PiP refused even on a direct click — use the in-page monitor
+        if (recorder.attachInlineMonitorNow(true)) {
+          setCanMonitor(false)
+          setWarn('ℹ️ 已改用页内监视框')
+        } else {
+          setWarn('⚠️ 监视窗打开失败：' + String(e && e.message ? e.message : e).slice(0, 60))
+        }
+        ctx.timeout(() => setWarn(''), 6000)
+      }
     }
 
     const stop = () => {
