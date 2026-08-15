@@ -178,7 +178,7 @@ const ReelSpot = (() => {
     document.addEventListener('mouseleave', onLeave)
     if (opts.zoomWheel) document.addEventListener('wheel', onWheel, { passive: false })
 
-    const pipe = { video, camVideo, cam, canvas, raf: 0, stream: null, dead: false, detach: null }
+    const pipe = { video, camVideo, cam, canvas, raf: 0, stream: null, dead: false, detach: null, emitError: opts.onError || null }
     pipe.detach = () => {
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mousedown', onDown)
@@ -287,30 +287,51 @@ const ReelSpot = (() => {
         }
       }
 
+      // operator preview blit (every 2nd frame, canvas-to-canvas, no encoding)
+      if (pipe.previewCtx) {
+        pipe.previewFrame = (pipe.previewFrame || 0) + 1
+        if (pipe.previewFrame % 2 === 0) {
+          try { pipe.previewCtx.drawImage(canvas, 0, 0, pipe.previewW, pipe.previewH) } catch (e) {}
+        }
+      }
+
       pipe.raf = requestAnimationFrame(draw)
     }
     pipe.raf = requestAnimationFrame(draw)
     try { pipe.stream = canvas.captureStream(opts.frameRate) } catch (e) { pipe.stream = null }
     if (!pipe.stream) { destroyComposePipe(pipe); return null }
 
-    // operator preview: pipe the composed canvas into the Document PiP window
-    if (opts.operatorPreview && opts.previewWindow) {
+    // operator preview: blit the composed canvas into a canvas inside the
+    // Document PiP window (frame blit, no media pipeline — MediaStream
+    // playback inside PiP documents renders black on some Chrome versions).
+    // Only for TAB capture: with window/screen capture the PiP window itself
+    // would be recorded (infinite mirror), so it stays closed there.
+    let surface = ''
+    try { surface = String(srcTrack.getSettings ? srcTrack.getSettings().displaySurface || '' : '') } catch (e) {}
+    if (opts.operatorPreview && opts.previewWindow && surface === 'browser') {
       try {
         const doc = opts.previewWindow.document
-        // explicit heights — % height on the video collapses to 0 otherwise
         doc.documentElement.style.cssText = 'height:100%;margin:0'
         doc.body.style.cssText = 'height:100%;margin:0;background:#000;overflow:hidden'
-        const pv = doc.createElement('video')
-        pv.muted = true
-        pv.autoplay = true
-        pv.playsInline = true
-        pv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;background:#000'
-        pv.srcObject = pipe.stream
-        doc.body.append(pv)
-        pv.play().catch(() => {})
+        const pc = doc.createElement('canvas')
+        const pw = 360
+        const ph = Math.max(2, Math.round((h / w) * pw))
+        pc.width = pw
+        pc.height = ph
+        pc.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;background:#000'
+        doc.body.append(pc)
+        pipe.previewCtx = pc.getContext('2d')
+        pipe.previewW = pw
+        pipe.previewH = ph
+        pipe.previewFrame = 0
         pipe.previewWin = opts.previewWindow
-        opts.previewWindow.addEventListener('pagehide', () => { pipe.previewWin = null })
+        opts.previewWindow.addEventListener('pagehide', () => { pipe.previewWin = null; pipe.previewCtx = null })
       } catch (e) { /* preview is best-effort */ }
+    } else if (opts.previewWindow) {
+      closePreviewWindow(opts.previewWindow)
+      if (surface && surface !== 'browser' && typeof pipe.emitError === 'function') {
+        pipe.emitError(new Error('监视窗仅在录制本标签页时可用（录屏幕/窗口会被录进画面）'))
+      }
     }
     return pipe
   }
@@ -460,7 +481,11 @@ const ReelSpot = (() => {
       const needsPipe = !!(opts.zoom || opts.cursorFx || opts.webcam)
       let pipe = null
       if (needsPipe) {
-        try { pipe = await createComposePipe(display, opts) } catch (e) { pipe = null }
+        try {
+          pipe = await createComposePipe(display, Object.assign({}, opts, {
+            onError: (e) => emit('error', e),
+          }))
+        } catch (e) { pipe = null }
       }
       if (opts.webcam && (!pipe || !pipe.cam)) {
         emit('error', new Error('ReelSpot: webcam unavailable, recording without it'))

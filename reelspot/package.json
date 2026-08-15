@@ -1,6 +1,6 @@
 {
   "name": "reelspot",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Zero-dependency browser screen recorder: MP4 output, mic mixing, cursor-follow zoom. Library + DSH plugin.",
   "main": "src/reelspot.js",
   "scripts": {
