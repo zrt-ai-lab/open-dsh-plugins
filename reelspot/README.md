@@ -76,7 +76,17 @@ const recorder = ReelSpot.createRecorder(options?)
 
 ## 用法二：DSH 插件 / As a DSH plugin
 
-在 DSH 会话中让 Cordis 代理安装（或自行调用 `cordis_define`）：
+### 一键安装（推荐）
+
+在 DSH 对话框里发送这句话即可，无需 clone、无需构建：
+
+```
+安装 ReelSpot 录屏插件：读取 https://raw.githubusercontent.com/zrt-ai-lab/open-dsh-plugins/main/reelspot/dist/reelspot-dsh.client.js 和 https://raw.githubusercontent.com/zrt-ai-lab/open-dsh-plugins/main/reelspot/dist/reelspot-dsh.host.js ，分别作为 code.client 和 code.host 调用 cordis_define（idPrefix 用 reelsp），然后 cordis_run 运行
+```
+
+在弹出的批准卡片上点 ✓（点 ✓✓ 授权未来版本，以后更新免确认）。DSH 重启后插件消失，重发这句话即可重装——这是 DSH 动态插件的进程级设计。
+
+### 手动安装
 
 **安装不需要构建**——`dist/` 目录已包含构建产物，直接用即可：
 
