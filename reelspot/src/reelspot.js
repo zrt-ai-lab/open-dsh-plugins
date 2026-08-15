@@ -297,13 +297,14 @@ const ReelSpot = (() => {
     if (opts.operatorPreview && opts.previewWindow) {
       try {
         const doc = opts.previewWindow.document
-        doc.body.style.margin = '0'
-        doc.body.style.background = '#000'
+        // explicit heights — % height on the video collapses to 0 otherwise
+        doc.documentElement.style.cssText = 'height:100%;margin:0'
+        doc.body.style.cssText = 'height:100%;margin:0;background:#000;overflow:hidden'
         const pv = doc.createElement('video')
         pv.muted = true
         pv.autoplay = true
         pv.playsInline = true
-        pv.style.cssText = 'width:100%;height:100%;display:block'
+        pv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;background:#000'
         pv.srcObject = pipe.stream
         doc.body.append(pv)
         pv.play().catch(() => {})
