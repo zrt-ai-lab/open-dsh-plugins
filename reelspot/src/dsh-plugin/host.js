@@ -1,0 +1,41 @@
+/*
+ * ReelSpot — DSH dynamic Cordis plugin, HOST half.
+ *
+ * Receives base64-encoded recordings from the Client half and writes them to
+ * <workspaceRoot>/recordings/<name>. Ready as-is for cordis_define code.host.
+ */
+return {
+  name: 'reelspot-recorder-host',
+  apply(ctx) {
+    harness.handle('save-recording', async (args) => {
+      const fs = ctx.get('fs')
+      const shell = ctx.get('shell')
+      const policy = ctx.get('sandboxPolicy')
+      if (!fs || !shell) return { ok: false, error: 'host fs/shell service unavailable' }
+      const root = policy && policy.workspaceRoot ? String(policy.workspaceRoot) : ''
+      if (!root) return { ok: false, error: 'no workspace root' }
+      const rawName = args && args.name ? String(args.name) : ''
+      const name = rawName.replace(/[^\w.-]+/g, '_') || ('reelspot-' + Date.now() + '.mp4')
+      const base64 = args && args.base64 ? String(args.base64) : ''
+      if (!base64) return { ok: false, error: 'empty payload' }
+      const dir = root + '\\recordings'
+      const out = dir + '\\' + name
+      const esc = (p) => p.replace(/'/g, "''")
+      const command = 'pwsh -NoProfile -Command "New-Item -ItemType Directory -Force -Path \'' + esc(dir) + '\' | Out-Null; $b64=[Console]::In.ReadToEnd(); [IO.File]::WriteAllBytes(\'' + esc(out) + '\', [Convert]::FromBase64String($b64.Trim()))"'
+      try {
+        const spec = shell.resolve({ command, stdin: base64, workdir: root, timeoutMs: 120000 })
+        const result = await shell.run(spec)
+        if (!result || result.exitCode !== 0) {
+          const errText = result && result.stderr && result.stderr.text ? String(result.stderr.text).slice(0, 300) : 'unknown'
+          return { ok: false, error: 'decode failed: ' + errText }
+        }
+        const target = await fs.resolve(out)
+        const info = await fs.stat(target)
+        if (!info) return { ok: false, error: 'write verification failed' }
+        return { ok: true, path: out }
+      } catch (e) {
+        return { ok: false, error: String(e && e.message ? e.message : e).slice(0, 300) }
+      }
+    })
+  },
+}

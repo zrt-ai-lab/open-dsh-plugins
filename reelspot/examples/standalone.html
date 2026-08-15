@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ReelSpot — standalone demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 22px; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 16px 0; }
+    button { padding: 8px 16px; border-radius: 8px; border: 1px solid #999; background: #fff; cursor: pointer; font-size: 14px; }
+    button.recording { border-color: #e5484d; color: #e5484d; }
+    video { width: 100%; border-radius: 8px; background: #000; margin-top: 8px; }
+    .meta { color: #666; font-size: 13px; margin: 6px 0; }
+    label { font-size: 14px; user-select: none; }
+    #status { color: #666; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>ReelSpot demo</h1>
+  <p>零依赖浏览器录屏：MP4 输出（不支持时回退 WebM）、麦克风混音、光标跟随放大聚焦。</p>
+  <div class="row">
+    <label><input type="checkbox" id="zoom" /> 🔍 放大聚焦</label>
+    <label><input type="checkbox" id="mic" checked /> 🎤 麦克风</label>
+    <button id="rec">● 开始录屏</button>
+    <span id="status"></span>
+  </div>
+  <div id="results"></div>
+
+  <script src="../src/reelspot.js"></script>
+  <script>
+    const recBtn = document.getElementById('rec')
+    const status = document.getElementById('status')
+    const results = document.getElementById('results')
+    let recorder = null
+    let timer = null
+    let startedAt = 0
+
+    function fmt(n) { return String(n).padStart(2, '0') }
+
+    recBtn.addEventListener('click', async () => {
+      if (recorder && recorder.getState() === 'recording') { recorder.stop(); return }
+      recorder = ReelSpot.createRecorder({
+        mic: document.getElementById('mic').checked,
+        zoom: document.getElementById('zoom').checked,
+      })
+      recorder.on('state', (s) => {
+        if (s === 'recording') {
+          startedAt = Date.now()
+          recBtn.textContent = '■ 停止'
+          recBtn.classList.add('recording')
+          timer = setInterval(() => {
+            const s2 = Math.floor((Date.now() - startedAt) / 1000)
+            status.textContent = fmt(Math.floor(s2 / 60)) + ':' + fmt(s2 % 60)
+          }, 500)
+        } else {
+          clearInterval(timer)
+          recBtn.textContent = '● 开始录屏'
+          recBtn.classList.remove('recording')
+          status.textContent = ''
+        }
+      })
+      recorder.on('stop', (r) => {
+        const url = URL.createObjectURL(r.blob)
+        const div = document.createElement('div')
+        const video = document.createElement('video')
+        video.src = url
+        video.controls = true
+        const meta = document.createElement('div')
+        meta.className = 'meta'
+        meta.textContent = r.name + ' · ' + (r.size / 1048576).toFixed(1) + ' MB · ' + r.audioMode + (r.zoomed ? ' · 聚焦' : '')
+        const a = document.createElement('a')
+        a.href = url
+        a.download = r.name
+        a.textContent = '下载 ' + r.ext
+        div.append(video, meta, a)
+        results.prepend(div)
+      })
+      recorder.on('error', (e) => { status.textContent = String(e && e.message ? e.message : e) })
+      await recorder.start()
+    })
+  </script>
+</body>
+</html>
