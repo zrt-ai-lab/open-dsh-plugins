@@ -16,7 +16,7 @@ A zero-dependency browser screen recorder — one-click screen / window / tab ca
 - 📼 **MP4 优先** — H.264 + AAC（Chrome/Edge 126+），自动回退 WebM；回退时可一键 **ffmpeg 转 MP4**（Host 端）
 - 🎤 **麦克风混音** — `AudioContext` 将标签页/系统音频与麦克风混成一条音轨
 - 🔍 **放大聚焦** — canvas 实时管线：光标移动时平滑放大跟随（默认 1.8×），静止后缩回全景；录制中 **Alt+滚轮** 实时调倍数（1× = 整页全景，最高 3.5×），取景状态在监视窗里看（成片保持干净）
-- 🖥️ **操作者监视窗** — 录制**本标签页**时工具栏出现 🖥️ 按钮，点开 Document PiP 悬浮小窗实时显示录制画面，并在**窗内**叠加取景小地图（整页缩略 + 黄框标出当前取景范围）和实时倍数。这些辅助标记**只存在于监视窗，绝不会进入成片**；监视窗本身是独立顶层窗口，也不会被标签页录制捕获。录整个屏幕/窗口时提示不可用（避免镜像递归）
+- 🖥️ **操作者监视窗** — 录制**「此标签页」**时，确认分享后**自动弹出**一个 Document PiP 悬浮小窗（默认停在屏幕右下角，可拖动/缩放），全程常驻显示录制画面，并在**窗内**叠加取景小地图（整页缩略 + 黄框标出当前取景范围）和实时倍数。这些辅助标记**只存在于监视窗，绝不会进入成片**；监视窗是独立顶层窗口，标签页录制不会捕获它。若浏览器未放行自动弹窗，工具栏会出现 🖥️ 按钮手动打开；录整个屏幕/窗口时不提供监视窗（它会被一起录进去造成镜像递归），会给出明确提示
 - 🖱️ **光标高亮 + 点击波纹** — 演示视频更清晰（仅录本标签页时跟踪光标）
 - 📹 **摄像头气泡** — Recordly 风格圆形 webcam 画中画（位置/大小可配）
 - ⏱️ **倒计时 + 暂停/继续** — 3-2-1 开录，录制中可暂停（时长统计扣除暂停段）
@@ -71,7 +71,8 @@ const recorder = ReelSpot.createRecorder(options?)
 | `zoomStep` | `0.2` | 滚轮每格步进 |
 | `zoomMinimap` | `true` | 在监视窗内显示取景小地图（缩略图 + 视口框），不进视频 |
 | `operatorPreview` | `true` | 允许把合成画面接入监视窗 |
-| `previewWindow` | `null` | 可选：调用方传入的 Document PiP 窗口（也可录制中调用 `recorder.attachPreviewWindow(win)`，注意 `requestWindow()` 会消耗用户激活，不能在 `getDisplayMedia` 之前调用） |
+| `autoMonitor` | `true` | 确认分享后自动打开监视窗（在 `getDisplayMedia` 之后、倒计时之前） |
+| `previewWindow` | `null` | 可选：调用方传入的 Document PiP 窗口（也可录制中调用 `recorder.attachPreviewWindow(win)`，注意 `requestWindow()` 会消耗用户激活，绝不能在 `getDisplayMedia` 之前调用） |
 | `cursorFx` | `false` | 光标高亮圈 + 点击波纹 |
 | `countdown` | `3` | 开录前倒计时秒数（0 = 关闭） |
 | `frameRate` | `30` | 帧率 |

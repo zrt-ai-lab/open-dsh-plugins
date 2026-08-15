@@ -23,6 +23,7 @@ const ReelSpot = (() => {
     zoomStep: 0.2,           // wheel step per notch
     zoomMinimap: true,       // viewport minimap in the MONITOR window (never in the video)
     operatorPreview: true,   // live "what is being recorded" monitor window (see below)
+    autoMonitor: true,       // try to open the monitor automatically right after the picker
     previewWindow: null,     // optional Document PiP window handed in by the caller
     // Operator preview: callers with a user gesture should open
     // `documentPictureInPicture.requestWindow()` at click time and pass it as
@@ -484,6 +485,19 @@ const ReelSpot = (() => {
       }
       if (!pipe || !pipe.stream) closePreviewWindow(opts.previewWindow)
 
+      // Auto-open the operator monitor here: the share picker has just been
+      // confirmed, so the page may still hold transient activation, and this
+      // runs BEFORE the countdown so the monitor is live while framing.
+      // requestWindow() must never run before getDisplayMedia — it consumes
+      // the activation that the picker itself needs.
+      if (opts.operatorPreview && opts.autoMonitor && pipe && pipe.stream && !pipe.previewWin
+        && pipe.surface === 'browser' && typeof documentPictureInPicture !== 'undefined') {
+        try {
+          const win = await documentPictureInPicture.requestWindow({ width: 380, height: 240 })
+          attachPreview(pipe, win)
+        } catch (e) { /* no activation left — the UI keeps a manual monitor button */ }
+      }
+
       const hasSysAudio = display.getAudioTracks().length > 0
       const recordStream = new MediaStream()
       if (pipe && pipe.stream) pipe.stream.getVideoTracks().forEach((t) => recordStream.addTrack(t))
@@ -605,6 +619,16 @@ const ReelSpot = (() => {
       return attachPreview(rec.pipe, win)
     }
 
+    /** Whether the operator monitor is currently attached and live. */
+    function hasMonitor() {
+      return !!(active && active.pipe && active.pipe.previewWin)
+    }
+
+    /** Capture surface of the running recording: 'browser' | 'window' | 'monitor' | ''. */
+    function getSurface() {
+      return active && active.pipe ? (active.pipe.surface || '') : ''
+    }
+
     function on(ev, fn) {
       if (!listeners[ev] || typeof fn !== 'function') return () => {}
       listeners[ev].push(fn)
@@ -614,7 +638,7 @@ const ReelSpot = (() => {
       }
     }
 
-    return { start, stop, pause, resume, getState, attachPreviewWindow, on }
+    return { start, stop, pause, resume, getState, attachPreviewWindow, hasMonitor, getSurface, on }
   }
 
   return { createRecorder, pickFormat, isSupported }
@@ -798,20 +822,28 @@ return {
           recRef.current = null
           setState('idle')
           setCanMonitor(false)
+        } else if (begun) {
+          const surface = recorder.getSurface()
+          if (recorder.hasMonitor()) setCanMonitor(false)
+          else if (surface && surface !== 'browser') {
+            setCanMonitor(false)
+            setWarn('⚠️ 监视窗仅在录制「此标签页」时可用')
+            ctx.timeout(() => setWarn(''), 6000)
+          }
         }
         startRef.current = false
       }
 
-      // operator monitor: opened from THIS click (requestWindow consumes the
-      // transient activation, so it must not be opened around getDisplayMedia)
+      // manual fallback when the automatic open had no user activation left
       const openMonitor = async () => {
         const recorder = recRef.current
         if (!recorder || typeof documentPictureInPicture === 'undefined') return
         try {
-          const win = await documentPictureInPicture.requestWindow({ width: 360, height: 220 })
-          if (!recorder.attachPreviewWindow(win)) {
-            setWarn('⚠️ 监视窗仅在录制本标签页时可用')
-            ctx.timeout(() => setWarn(''), 5000)
+          const win = await documentPictureInPicture.requestWindow({ width: 380, height: 240 })
+          if (recorder.attachPreviewWindow(win)) setCanMonitor(false)
+          else {
+            setWarn('⚠️ 监视窗仅在录制「此标签页」时可用')
+            ctx.timeout(() => setWarn(''), 6000)
           }
         } catch (e) { /* user dismissed the window request */ }
       }
@@ -975,7 +1007,7 @@ return {
           (recording || paused) && canMonitor
             ? React.createElement('button', {
                 className: 'reelspot-tog',
-                title: '打开监视窗：悬浮小窗实时显示正在录制的合成画面（不会被录进视频，仅录本标签页时可用）',
+                title: '打开监视窗：悬浮小窗实时显示录制画面和取景范围（不会被录进视频）',
                 onClick: openMonitor,
               }, '🖥️')
             : null,

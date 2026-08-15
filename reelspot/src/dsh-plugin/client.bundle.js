@@ -176,6 +176,17 @@ function ReelSpotButton(ctx) {
         recRef.current = null
         setState('idle') // picker or countdown cancelled
         setCanMonitor(false)
+      } else if (begun) {
+        // the monitor auto-opened after the picker when activation allowed it;
+        // only offer the manual button when it is not live, and explain why
+        // screen/window capture cannot have one
+        const surface = recorder.getSurface()
+        if (recorder.hasMonitor()) setCanMonitor(false)
+        else if (surface && surface !== 'browser') {
+          setCanMonitor(false)
+          setWarn('⚠️ 监视窗仅在录制「此标签页」时可用')
+          ctx.timeout(() => setWarn(''), 6000)
+        }
       }
       startRef.current = false
     }
@@ -186,10 +197,11 @@ function ReelSpotButton(ctx) {
       const recorder = recRef.current
       if (!recorder || typeof documentPictureInPicture === 'undefined') return
       try {
-        const win = await documentPictureInPicture.requestWindow({ width: 360, height: 220 })
-        if (!recorder.attachPreviewWindow(win)) {
-          setWarn('⚠️ 监视窗仅在录制本标签页时可用')
-          ctx.timeout(() => setWarn(''), 5000)
+        const win = await documentPictureInPicture.requestWindow({ width: 380, height: 240 })
+        if (recorder.attachPreviewWindow(win)) setCanMonitor(false)
+        else {
+          setWarn('⚠️ 监视窗仅在录制「此标签页」时可用')
+          ctx.timeout(() => setWarn(''), 6000)
         }
       } catch (e) { /* user dismissed the window request */ }
     }
@@ -367,7 +379,7 @@ function ReelSpotButton(ctx) {
         (recording || paused) && canMonitor
           ? React.createElement('button', {
               className: 'reelspot-tog',
-              title: '打开监视窗：悬浮小窗实时显示正在录制的合成画面（不会被录进视频，仅录本标签页时可用）',
+              title: '打开监视窗：悬浮小窗实时显示录制画面和取景范围（不会被录进视频）',
               onClick: openMonitor,
             }, '🖥️')
           : null,

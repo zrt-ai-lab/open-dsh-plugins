@@ -35,6 +35,7 @@ const ReelSpot = (() => {
     zoomStep: 0.2,           // wheel step per notch
     zoomMinimap: true,       // viewport minimap in the MONITOR window (never in the video)
     operatorPreview: true,   // live "what is being recorded" monitor window (see below)
+    autoMonitor: true,       // try to open the monitor automatically right after the picker
     previewWindow: null,     // optional Document PiP window handed in by the caller
     // Operator preview: callers with a user gesture should open
     // `documentPictureInPicture.requestWindow()` at click time and pass it as
@@ -496,6 +497,19 @@ const ReelSpot = (() => {
       }
       if (!pipe || !pipe.stream) closePreviewWindow(opts.previewWindow)
 
+      // Auto-open the operator monitor here: the share picker has just been
+      // confirmed, so the page may still hold transient activation, and this
+      // runs BEFORE the countdown so the monitor is live while framing.
+      // requestWindow() must never run before getDisplayMedia — it consumes
+      // the activation that the picker itself needs.
+      if (opts.operatorPreview && opts.autoMonitor && pipe && pipe.stream && !pipe.previewWin
+        && pipe.surface === 'browser' && typeof documentPictureInPicture !== 'undefined') {
+        try {
+          const win = await documentPictureInPicture.requestWindow({ width: 380, height: 240 })
+          attachPreview(pipe, win)
+        } catch (e) { /* no activation left — the UI keeps a manual monitor button */ }
+      }
+
       const hasSysAudio = display.getAudioTracks().length > 0
       const recordStream = new MediaStream()
       if (pipe && pipe.stream) pipe.stream.getVideoTracks().forEach((t) => recordStream.addTrack(t))
@@ -617,6 +631,16 @@ const ReelSpot = (() => {
       return attachPreview(rec.pipe, win)
     }
 
+    /** Whether the operator monitor is currently attached and live. */
+    function hasMonitor() {
+      return !!(active && active.pipe && active.pipe.previewWin)
+    }
+
+    /** Capture surface of the running recording: 'browser' | 'window' | 'monitor' | ''. */
+    function getSurface() {
+      return active && active.pipe ? (active.pipe.surface || '') : ''
+    }
+
     function on(ev, fn) {
       if (!listeners[ev] || typeof fn !== 'function') return () => {}
       listeners[ev].push(fn)
@@ -626,7 +650,7 @@ const ReelSpot = (() => {
       }
     }
 
-    return { start, stop, pause, resume, getState, attachPreviewWindow, on }
+    return { start, stop, pause, resume, getState, attachPreviewWindow, hasMonitor, getSurface, on }
   }
 
   return { createRecorder, pickFormat, isSupported }
