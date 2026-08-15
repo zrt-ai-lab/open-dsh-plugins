@@ -121,12 +121,23 @@ function ReelSpotButton(ctx) {
     const start = async () => {
       if (startRef.current) return
       startRef.current = true
+      // operator preview: open the Document PiP monitor window NOW, inside the
+      // click's transient activation — it shows the exact composed frame live
+      // and is NOT captured when recording this tab (separate top-level window)
+      let previewWindow = null
+      if ((zoomRef.current || cursorFxRef.current || webcamRef.current)
+        && typeof documentPictureInPicture !== 'undefined') {
+        try {
+          previewWindow = await documentPictureInPicture.requestWindow({ width: 360, height: 220 })
+        } catch (e) { previewWindow = null }
+      }
       const recorder = ReelSpot.createRecorder({
         mic: micRef.current,
         zoom: zoomRef.current,
         webcam: webcamRef.current,
         cursorFx: cursorFxRef.current,
         countdown: 3,
+        previewWindow,
       })
       recRef.current = recorder
       recorder.on('countdown', (n) => setCountNum(n))
@@ -171,6 +182,7 @@ function ReelSpotButton(ctx) {
       if (!begun && recorder.getState() === 'idle') {
         recRef.current = null
         setState('idle') // picker or countdown cancelled
+        if (previewWindow) { try { previewWindow.close() } catch (e) {} }
       }
       startRef.current = false
     }

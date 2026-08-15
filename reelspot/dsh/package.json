@@ -1,6 +1,6 @@
 {
   "name": "dsh-reelspot",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "ReelSpot screen recorder for the DeepSeek Harness (DSH) web GUI — header button, MP4/WebM output, mic mixing, cursor-follow zoom. Persistent composition plugin.",
   "type": "module",
   "main": "lib/index.js",

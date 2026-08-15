@@ -34,6 +34,13 @@ const ReelSpot = (() => {
     zoomMax: 3.5,            // wheel-adjustable zoom ceiling
     zoomStep: 0.2,           // wheel step per notch
     zoomMinimap: true,       // viewport minimap + factor badge while zoomed in
+    operatorPreview: true,   // live "what is being recorded" monitor window (see below)
+    previewWindow: null,     // optional Document PiP window handed in by the caller
+    // Operator preview: callers with a user gesture should open
+    // `documentPictureInPicture.requestWindow()` at click time and pass it as
+    // previewWindow — the core pipes the composed canvas into it, so the
+    // operator sees the exact recorded frame live. A Document PiP window is a
+    // separate top-level window: it is NOT captured when recording this tab.
     cursorFx: false,         // cursor highlight ring + click ripples (this-tab only)
     countdown: 3,            // seconds before recording starts (0 = off)
     frameRate: 30,
@@ -285,7 +292,31 @@ const ReelSpot = (() => {
     pipe.raf = requestAnimationFrame(draw)
     try { pipe.stream = canvas.captureStream(opts.frameRate) } catch (e) { pipe.stream = null }
     if (!pipe.stream) { destroyComposePipe(pipe); return null }
+
+    // operator preview: pipe the composed canvas into the Document PiP window
+    if (opts.operatorPreview && opts.previewWindow) {
+      try {
+        const doc = opts.previewWindow.document
+        doc.body.style.margin = '0'
+        doc.body.style.background = '#000'
+        const pv = doc.createElement('video')
+        pv.muted = true
+        pv.autoplay = true
+        pv.playsInline = true
+        pv.style.cssText = 'width:100%;height:100%;display:block'
+        pv.srcObject = pipe.stream
+        doc.body.append(pv)
+        pv.play().catch(() => {})
+        pipe.previewWin = opts.previewWindow
+        opts.previewWindow.addEventListener('pagehide', () => { pipe.previewWin = null })
+      } catch (e) { /* preview is best-effort */ }
+    }
     return pipe
+  }
+
+  function closePreviewWindow(win) {
+    if (!win) return
+    try { win.close() } catch (e) {}
   }
 
   function destroyComposePipe(pipe) {
@@ -293,6 +324,7 @@ const ReelSpot = (() => {
     pipe.dead = true
     try { cancelAnimationFrame(pipe.raf) } catch (e) {}
     try { pipe.detach() } catch (e) {}
+    closePreviewWindow(pipe.previewWin)
     stopStream(pipe.stream)
     stopStream(pipe.cam)
     try { pipe.video.srcObject = null; pipe.video.remove() } catch (e) {}
@@ -432,6 +464,7 @@ const ReelSpot = (() => {
       if (opts.webcam && (!pipe || !pipe.cam)) {
         emit('error', new Error('ReelSpot: webcam unavailable, recording without it'))
       }
+      if (!pipe || !pipe.stream) closePreviewWindow(opts.previewWindow)
 
       const hasSysAudio = display.getAudioTracks().length > 0
       const recordStream = new MediaStream()
