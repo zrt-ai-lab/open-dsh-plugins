@@ -46,7 +46,17 @@ return {
       '.reelspot-op[disabled]{opacity:.5;cursor:default}',
       '.reelspot-path{margin-top:6px;color:var(--dsw-alias-state-success-primary,#4caf50);word-break:break-all}',
       '.reelspot-err{margin-top:6px;color:var(--dsw-alias-state-error-primary,#e5484d);word-break:break-all}',
+      '.reelspot-warn{font-size:11px;color:var(--dsw-alias-state-warn-primary,#e6a23c);max-width:170px;line-height:1.35}',
     ].join('\n'), 'reelspot')
+
+    // map core error messages to short inline Chinese warnings
+    function warnText(e) {
+      const m = String(e && e.message ? e.message : e)
+      if (m.indexOf('webcam') >= 0) return '⚠️ 摄像头不可用，本次录制不含摄像头'
+      if (m.indexOf('microphone') >= 0) return '⚠️ 麦克风不可用，本次录制无麦克风声音'
+      if (m.indexOf('support') >= 0) return '⚠️ 当前浏览器不支持录屏'
+      return '⚠️ ' + m.slice(0, 80)
+    }
 
     function pad2(n) { return String(n).padStart(2, '0') }
 
@@ -86,6 +96,7 @@ return {
       const [webcamOn, setWebcamOn] = React.useState(false)
       const [cursorFxOn, setCursorFxOn] = React.useState(false)
       const [items, setItems] = React.useState([])
+      const [warn, setWarn] = React.useState('')
       const [panelOpen, setPanelOpen] = React.useState(false)
       const recRef = React.useRef(null)
       const elapsedBaseRef = React.useRef(0)
@@ -148,7 +159,11 @@ return {
           } else if (s === 'countdown') setState('countdown')
           else if (s === 'idle') setState('idle')
         })
-        recorder.on('error', (e) => console.error('ReelSpot:', e && e.message ? e.message : e))
+        recorder.on('error', (e) => {
+          console.error('ReelSpot:', e && e.message ? e.message : e)
+          setWarn(warnText(e))
+          ctx.timeout(() => setWarn(''), 5000)
+        })
         const begun = await recorder.start()
         if (!begun && recorder.getState() === 'idle') {
           recRef.current = null
@@ -313,6 +328,7 @@ return {
           tog(micOn, setMicOn, micOn ? '麦克风：开（点击关闭）' : '麦克风：关（点击开启）', '🎤'),
           pauseButton,
           mainButton,
+          warn ? React.createElement('span', { className: 'reelspot-warn' }, warn) : null,
         ),
         panel,
       )

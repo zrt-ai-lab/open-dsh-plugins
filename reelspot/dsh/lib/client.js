@@ -361,6 +361,9 @@ window.__ModuleLoader__.load({
 		      if (needsPipe) {
 		        try { pipe = await createComposePipe(display, opts) } catch (e) { pipe = null }
 		      }
+		      if (opts.webcam && (!pipe || !pipe.cam)) {
+		        emit('error', new Error('ReelSpot: webcam unavailable, recording without it'))
+		      }
 		
 		      const hasSysAudio = display.getAudioTracks().length > 0
 		      const recordStream = new MediaStream()
@@ -501,7 +504,7 @@ window.__ModuleLoader__.load({
 		 * cordis ctx (ctx.slots, ctx.effect, timer mixin via inject: ['timer']).
 		 * Plain JavaScript only — no JSX, no imports.
 		 */
-
+		
 		const CSS = [
 		  '.reelspot-wrap{display:inline-flex;align-items:center;gap:4px}',
 		  '.reelspot-btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:14px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.45));background:transparent;color:inherit;font-size:12px;line-height:1;cursor:pointer;user-select:none;font-family:inherit}',
@@ -531,16 +534,26 @@ window.__ModuleLoader__.load({
 		  '.reelspot-op[disabled]{opacity:.5;cursor:default}',
 		  '.reelspot-path{margin-top:6px;color:var(--dsw-alias-state-success-primary,#4caf50);word-break:break-all}',
 		  '.reelspot-err{margin-top:6px;color:var(--dsw-alias-state-error-primary,#e5484d);word-break:break-all}',
+		  '.reelspot-warn{font-size:11px;color:var(--dsw-alias-state-warn-primary,#e6a23c);max-width:170px;line-height:1.35}',
 		].join('\n')
-
+		
+		// map core error messages to short inline Chinese warnings
+		function warnText(e) {
+		  const m = String(e && e.message ? e.message : e)
+		  if (m.indexOf('webcam') >= 0) return '⚠️ 摄像头不可用，本次录制不含摄像头'
+		  if (m.indexOf('microphone') >= 0) return '⚠️ 麦克风不可用，本次录制无麦克风声音'
+		  if (m.indexOf('support') >= 0) return '⚠️ 当前浏览器不支持录屏'
+		  return '⚠️ ' + m.slice(0, 80)
+		}
+		
 		function pad2(n) { return String(n).padStart(2, '0') }
-
+		
 		function fmtSize(bytes) {
 		  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB'
 		  if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB'
 		  return bytes + ' B'
 		}
-
+		
 		function toBase64(blob) {
 		  return new Promise((resolve, reject) => {
 		    const r = new FileReader()
@@ -552,17 +565,17 @@ window.__ModuleLoader__.load({
 		    r.readAsDataURL(blob)
 		  })
 		}
-
+		
 		const audioText = (mode) => mode === 'system+mic' ? '系统+麦克风'
 		  : mode === 'mic' ? '麦克风'
 		  : mode === 'system' ? '系统/标签页'
 		  : '无音频'
-
+		
 		let nextId = 1
-
+		
 		// set by the mounted component so the global keyboard shortcut can reach it
 		const shortcutToggleRef = { current: null }
-
+		
 		function ReelSpotButton(ctx) {
 		  return function ReelSpotButtonView() {
 		    const [state, setState] = React.useState('idle') // idle | countdown | recording | paused
@@ -573,6 +586,7 @@ window.__ModuleLoader__.load({
 		    const [webcamOn, setWebcamOn] = React.useState(false)
 		    const [cursorFxOn, setCursorFxOn] = React.useState(false)
 		    const [items, setItems] = React.useState([]) // {id,name,ext,url,blob,size,audioMode,zoomed,webcam,savedPath,saving,transcoding,transcodedPath,error}
+		    const [warn, setWarn] = React.useState('')
 		    const [panelOpen, setPanelOpen] = React.useState(false)
 		    const recRef = React.useRef(null) // ReelSpot recorder instance
 		    const elapsedBaseRef = React.useRef(0)
@@ -588,11 +602,11 @@ window.__ModuleLoader__.load({
 		    cursorFxRef.current = cursorFxOn
 		    itemsRef.current = items
 		    stateRef.current = state
-
+		
 		    const patchItem = (id, patch) => {
 		      setItems((prev) => prev.map((it) => (it.id === id ? Object.assign({}, it, patch) : it)))
 		    }
-
+		
 		    const start = async () => {
 		      const recorder = ReelSpot.createRecorder({
 		        mic: micRef.current,
@@ -635,30 +649,34 @@ window.__ModuleLoader__.load({
 		        } else if (s === 'countdown') setState('countdown')
 		        else if (s === 'idle') setState('idle')
 		      })
-		      recorder.on('error', (e) => console.error('ReelSpot:', e && e.message ? e.message : e))
+		      recorder.on('error', (e) => {
+		        console.error('ReelSpot:', e && e.message ? e.message : e)
+		        setWarn(warnText(e))
+		        ctx.timeout(() => setWarn(''), 5000)
+		      })
 		      const begun = await recorder.start()
 		      if (!begun && recorder.getState() === 'idle') {
 		        recRef.current = null
 		        setState('idle') // picker or countdown cancelled
 		      }
 		    }
-
+		
 		    const stop = () => {
 		      const recorder = recRef.current
 		      if (recorder) recorder.stop()
 		    }
-
+		
 		    const pauseOrResume = () => {
 		      const recorder = recRef.current
 		      if (!recorder) return
 		      if (recorder.getState() === 'paused') recorder.resume()
 		      else recorder.pause()
 		    }
-
+		
 		    // elapsed helpers: accumulated base (pause) + live segment (ticker)
 		    let elapsedRefNow = () => elapsed
 		    React.useEffect(() => { elapsedRefNow = () => elapsed })
-
+		
 		    // elapsed ticker while actively recording (frozen while paused)
 		    React.useEffect(() => {
 		      if (state !== 'recording') return undefined
@@ -667,7 +685,7 @@ window.__ModuleLoader__.load({
 		        setElapsed(elapsedBaseRef.current + Math.floor((Date.now() - segStart) / 1000))
 		      }, 500)
 		    }, [state])
-
+		
 		    // expose start/stop toggle to the global keyboard shortcut
 		    React.useEffect(() => {
 		      shortcutToggleRef.current = () => {
@@ -677,14 +695,14 @@ window.__ModuleLoader__.load({
 		      }
 		      return () => { shortcutToggleRef.current = null }
 		    })
-
+		
 		    // unmount cleanup: halt capture, revoke URLs
 		    React.useEffect(() => () => {
 		      const recorder = recRef.current
 		      if (recorder) { recRef.current = null; try { recorder.stop() } catch (e) {} }
 		      itemsRef.current.forEach((it) => { try { URL.revokeObjectURL(it.url) } catch (e) {} })
 		    }, [])
-
+		
 		    const saveToWorkspace = async (item) => {
 		      patchItem(item.id, { saving: true, error: '' })
 		      try {
@@ -701,7 +719,7 @@ window.__ModuleLoader__.load({
 		        patchItem(item.id, { saving: false, error: '保存失败: ' + String(e && e.message ? e.message : e) })
 		      }
 		    }
-
+		
 		    const transcode = async (item) => {
 		      patchItem(item.id, { transcoding: true, error: '' })
 		      try {
@@ -718,29 +736,29 @@ window.__ModuleLoader__.load({
 		        patchItem(item.id, { transcoding: false, error: '转码失败: ' + String(e && e.message ? e.message : e) })
 		      }
 		    }
-
+		
 		    const removeItem = (item) => {
 		      try { URL.revokeObjectURL(item.url) } catch (e) {}
 		      setItems((prev) => prev.filter((it) => it.id !== item.id))
 		    }
-
+		
 		    const busy = state !== 'idle'
 		    const recording = state === 'recording'
 		    const paused = state === 'paused'
 		    const counting = state === 'countdown'
-
+		
 		    const tog = (on, setOn, title, icon) => React.createElement('button', {
 		      className: 'reelspot-tog' + (on ? ' on' : ' off'),
 		      title,
 		      disabled: busy,
 		      onClick: () => setOn(!on),
 		    }, icon)
-
+		
 		    const label = counting ? String(countNum)
 		      : (recording || paused)
 		        ? pad2(Math.floor(elapsed / 60)) + ':' + pad2(elapsed % 60)
 		        : '录屏'
-
+		
 		    const mainButton = React.createElement('button', {
 		      className: 'reelspot-btn' + (recording ? ' recording' : '') + (paused ? ' paused' : '') + (counting ? ' countdown' : ''),
 		      title: counting ? '倒计时中，点击取消'
@@ -762,7 +780,7 @@ window.__ModuleLoader__.load({
 		        ? React.createElement('span', { className: 'reelspot-badge' }, String(items.length))
 		        : null,
 		    )
-
+		
 		    const pauseButton = (recording || paused)
 		      ? React.createElement('button', {
 		          className: 'reelspot-tog',
@@ -770,7 +788,7 @@ window.__ModuleLoader__.load({
 		          onClick: pauseOrResume,
 		        }, paused ? '▶' : '⏸')
 		      : null
-
+		
 		    const panel = panelOpen && items.length
 		      ? React.createElement('div', { className: 'reelspot-panel' },
 		          React.createElement('div', { className: 'reelspot-panel-head' },
@@ -805,7 +823,7 @@ window.__ModuleLoader__.load({
 		          )),
 		        )
 		      : null
-
+		
 		    return React.createElement(React.Fragment, null,
 		      React.createElement('span', { className: 'reelspot-wrap' },
 		        tog(cursorFxOn, setCursorFxOn, cursorFxOn ? '光标高亮+点击波纹：开（仅录本标签页时跟踪）' : '光标高亮+点击波纹：关（点击开启）', '🖱️'),
@@ -814,12 +832,13 @@ window.__ModuleLoader__.load({
 		        tog(micOn, setMicOn, micOn ? '麦克风：开（点击关闭）' : '麦克风：关（点击开启）', '🎤'),
 		        pauseButton,
 		        mainButton,
+		        warn ? React.createElement('span', { className: 'reelspot-warn' }, warn) : null,
 		      ),
 		      panel,
 		    )
 		  }
 		}
-
+		
 		function apply(ctx) {
 		  // package-owned stylesheet, removed with the plugin fiber
 		  ctx.effect(() => {
@@ -829,7 +848,7 @@ window.__ModuleLoader__.load({
 		    document.head.append(tag)
 		    return () => tag.remove()
 		  }, 'dsh-reelspot: styles')
-
+		
 		  // global keyboard shortcut: Alt+Shift+R toggles recording
 		  ctx.effect(() => {
 		    const handler = (e) => {
@@ -841,14 +860,14 @@ window.__ModuleLoader__.load({
 		    document.addEventListener('keydown', handler)
 		    return () => document.removeEventListener('keydown', handler)
 		  }, 'dsh-reelspot: shortcut')
-
+		
 		  const View = ReelSpotButton(ctx)
 		  ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register(
 		    { name: 'conversation.session.header.actions', id: 'reelspot', order: 30, label: 'ReelSpot 录屏' },
 		    () => React.createElement(View),
 		  ))
 		}
-
+		
 		exports.name = 'dsh-reelspot'
 		exports.inject = ['slots', 'timer']
 		exports.apply = apply

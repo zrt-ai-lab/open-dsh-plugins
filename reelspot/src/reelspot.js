@@ -367,6 +367,9 @@ const ReelSpot = (() => {
       if (needsPipe) {
         try { pipe = await createComposePipe(display, opts) } catch (e) { pipe = null }
       }
+      if (opts.webcam && (!pipe || !pipe.cam)) {
+        emit('error', new Error('ReelSpot: webcam unavailable, recording without it'))
+      }
 
       const hasSysAudio = display.getAudioTracks().length > 0
       const recordStream = new MediaStream()
