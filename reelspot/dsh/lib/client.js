@@ -325,6 +325,7 @@ window.__ModuleLoader__.load({
 		      listeners[ev].slice().forEach((fn) => { try { fn(arg) } catch (e) {} })
 		    }
 		    let active = null
+		    let starting = false
 		
 		    function cleanupCapture(rec) {
 		      destroyComposePipe(rec.pipe)
@@ -377,7 +378,20 @@ window.__ModuleLoader__.load({
 		      })
 		    }
 		
+		    // re-entry lock: start() is async and `active` is only set AFTER the
+		    // share picker resolves — a second call during that window would open
+		    // another picker and tear down the first pipeline
 		    async function start() {
+		      if (active || starting) return null
+		      starting = true
+		      try {
+		        return await startInner()
+		      } finally {
+		        starting = false
+		      }
+		    }
+		
+		    async function startInner() {
 		      if (active) return null
 		      if (!isSupported()) {
 		        emit('error', new Error('ReelSpot: this browser does not support screen capture'))
@@ -637,6 +651,7 @@ window.__ModuleLoader__.load({
 		    const [warn, setWarn] = React.useState('')
 		    const [panelOpen, setPanelOpen] = React.useState(false)
 		    const recRef = React.useRef(null) // ReelSpot recorder instance
+		    const startRef = React.useRef(false) // start-in-flight guard (picker open / countdown)
 		    const elapsedBaseRef = React.useRef(0)
 		    const micRef = React.useRef(true)
 		    const zoomRef = React.useRef(false)
@@ -656,6 +671,8 @@ window.__ModuleLoader__.load({
 		    }
 		
 		    const start = async () => {
+		      if (startRef.current) return
+		      startRef.current = true
 		      const recorder = ReelSpot.createRecorder({
 		        mic: micRef.current,
 		        zoom: zoomRef.current,
@@ -707,6 +724,7 @@ window.__ModuleLoader__.load({
 		        recRef.current = null
 		        setState('idle') // picker or countdown cancelled
 		      }
+		      startRef.current = false
 		    }
 		
 		    const stop = () => {

@@ -99,6 +99,7 @@ function ReelSpotButton(ctx) {
     const [warn, setWarn] = React.useState('')
     const [panelOpen, setPanelOpen] = React.useState(false)
     const recRef = React.useRef(null) // ReelSpot recorder instance
+    const startRef = React.useRef(false) // start-in-flight guard (picker open / countdown)
     const elapsedBaseRef = React.useRef(0)
     const micRef = React.useRef(true)
     const zoomRef = React.useRef(false)
@@ -118,6 +119,8 @@ function ReelSpotButton(ctx) {
     }
 
     const start = async () => {
+      if (startRef.current) return
+      startRef.current = true
       const recorder = ReelSpot.createRecorder({
         mic: micRef.current,
         zoom: zoomRef.current,
@@ -169,6 +172,7 @@ function ReelSpotButton(ctx) {
         recRef.current = null
         setState('idle') // picker or countdown cancelled
       }
+      startRef.current = false
     }
 
     const stop = () => {
