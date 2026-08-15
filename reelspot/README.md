@@ -122,11 +122,16 @@ cd open-dsh-plugins/reelspot
 ## 开发 / Development
 
 ```
-src/reelspot.js            核心库（零依赖，纯浏览器 API）
-src/dsh-plugin/client.js   DSH 插件客户端壳（UI）
-src/dsh-plugin/host.js     DSH 插件 Host 端（保存到工作区）
-examples/standalone.html   独立演示页
-build.mjs                  生成 dist/ 下可直接安装的插件文件
+src/reelspot.js                 核心库（零依赖，纯浏览器 API）
+src/dsh-plugin/client.js        动态插件客户端壳（UI，cordis_define 形态）
+src/dsh-plugin/host.js          动态插件 Host 端（保存到工作区）
+src/dsh-plugin/client.bundle.js 组合插件客户端（dsh.client 模块表形态）
+dsh/                            可发布的组合插件包（npx dsh-reelspot install）
+  lib/index.js                  Host 端：POST /dsh-reelspot/save 保存路由
+  lib/client.js                 构建生成的浏览器 bundle
+  bin/install.mjs               安装/卸载器（profile node_modules + cordis.patch.yml）
+examples/standalone.html        独立演示页
+build.mjs                       生成 dist/ 与 dsh/lib/client.js
 ```
 
 ## License
