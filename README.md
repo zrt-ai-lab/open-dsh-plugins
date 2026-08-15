@@ -12,6 +12,16 @@ Open-source dynamic Cordis plugins for the DSH Web GUI. Each subdirectory is a s
 
 ## 一键安装 / One-line Install
 
+### npx 持久安装（推荐，永久生效）
+
+```bash
+npx dsh-reelspot install   # 然后重启 DSH，硬刷新页面
+```
+
+基于 DSH 官方组合插件机制（profile `node_modules` + `cordis.patch.yml` 用户层），装好后永久生效、无需批准。卸载：`npx dsh-reelspot uninstall`。
+
+### 一句话试用（动态插件，进程级）
+
 **不需要 clone、不需要构建、不需要碰任何文件。** 在 DSH 对话框里发送一句话即可（以 reelspot 为例）：
 
 ```

@@ -1,0 +1,41 @@
+{
+  "name": "dsh-reelspot",
+  "version": "0.1.0",
+  "description": "ReelSpot screen recorder for the DeepSeek Harness (DSH) web GUI — header button, MP4/WebM output, mic mixing, cursor-follow zoom. Persistent composition plugin.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-reelspot": "bin/install.mjs"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-cordis-client-runner"
+      ]
+    }
+  },
+  "files": [
+    "lib/",
+    "bin/",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "screen-recorder",
+    "getDisplayMedia",
+    "mp4"
+  ],
+  "license": "MIT"
+}

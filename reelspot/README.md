@@ -76,7 +76,18 @@ const recorder = ReelSpot.createRecorder(options?)
 
 ## 用法二：DSH 插件 / As a DSH plugin
 
-### 一键安装（推荐）
+### npx 持久安装（推荐，永久生效）
+
+```bash
+npx dsh-reelspot install
+# 然后重启 DSH（停掉当前 dsh web 再启动），硬刷新页面
+```
+
+这是 DSH 官方的**组合插件**机制：安装器把包放进 profile 的 `node_modules` 并向 `cordis.patch.yml` 插入一行 loader 配置。装好后**永久生效、无需批准**。卸载：`npx dsh-reelspot uninstall`。
+
+> 未发布 npm 前可本地执行：`node reelspot/dsh/bin/install.mjs install`
+
+### 一句话试用（动态插件，进程级）
 
 在 DSH 对话框里发送这句话即可，无需 clone、无需构建：
 
@@ -84,7 +95,7 @@ const recorder = ReelSpot.createRecorder(options?)
 安装 ReelSpot 录屏插件：读取 https://raw.githubusercontent.com/zrt-ai-lab/open-dsh-plugins/main/reelspot/dist/reelspot-dsh.client.js 和 https://raw.githubusercontent.com/zrt-ai-lab/open-dsh-plugins/main/reelspot/dist/reelspot-dsh.host.js ，分别作为 code.client 和 code.host 调用 cordis_define（idPrefix 用 reelsp），然后 cordis_run 运行
 ```
 
-在弹出的批准卡片上点 ✓（点 ✓✓ 授权未来版本，以后更新免确认）。DSH 重启后插件消失，重发这句话即可重装——这是 DSH 动态插件的进程级设计。
+在弹出的批准卡片上点 ✓（点 ✓✓ 授权未来版本，以后更新免确认）。DSH 重启后动态插件消失，重发这句话即可重装；想永久生效请用上面的 npx 持久安装。
 
 ### 手动安装
 
