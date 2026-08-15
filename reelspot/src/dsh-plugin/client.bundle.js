@@ -337,7 +337,7 @@ function ReelSpotButton(ctx) {
     return React.createElement(React.Fragment, null,
       React.createElement('span', { className: 'reelspot-wrap' },
         tog(cursorFxOn, setCursorFxOn, cursorFxOn ? '光标高亮+点击波纹：开（仅录本标签页时跟踪）' : '光标高亮+点击波纹：关（点击开启）', '🖱️'),
-        tog(zoomOn, setZoomOn, zoomOn ? '放大聚焦：开（点击关闭）' : '放大聚焦：关（点击开启，光标移动时自动放大跟随）', '🔍'),
+        tog(zoomOn, setZoomOn, zoomOn ? '放大聚焦：开（录制中 Alt+滚轮调倍数，滚到 1× 看整页；点击关闭）' : '放大聚焦：关（点击开启，光标移动自动跟随放大）', '🔍'),
         tog(webcamOn, setWebcamOn, webcamOn ? '摄像头气泡：开（点击关闭）' : '摄像头气泡：关（点击开启）', '📹'),
         tog(micOn, setMicOn, micOn ? '麦克风：开（点击关闭）' : '麦克风：关（点击开启）', '🎤'),
         pauseButton,

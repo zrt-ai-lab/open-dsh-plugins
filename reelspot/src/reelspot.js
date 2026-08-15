@@ -30,6 +30,9 @@ const ReelSpot = (() => {
     zoom: false,             // cursor-follow zoom pipeline (canvas)
     zoomFactor: 1.8,         // magnification while the cursor is active
     zoomIdleMs: 2000,        // idle delay before zooming back out
+    zoomWheel: true,         // Alt+mouse-wheel adjusts the zoom factor live (1x = full view)
+    zoomMax: 3.5,            // wheel-adjustable zoom ceiling
+    zoomStep: 0.2,           // wheel step per notch
     cursorFx: false,         // cursor highlight ring + click ripples (this-tab only)
     countdown: 3,            // seconds before recording starts (0 = off)
     frameRate: 30,
@@ -127,7 +130,7 @@ const ReelSpot = (() => {
     }
 
     const st = {
-      zoom: 1, tzoom: 1,
+      zoom: 1, tzoom: 1, factor: opts.zoomFactor,
       cx: w / 2, cy: h / 2, tx: w / 2, ty: h / 2,
       lastMove: 0, cursorX: null, cursorY: null, ripples: [],
     }
@@ -142,7 +145,17 @@ const ReelSpot = (() => {
       st.ty = sy
       st.cursorX = sx
       st.cursorY = sy
-      st.tzoom = opts.zoomFactor
+      st.tzoom = st.factor
+      st.lastMove = Date.now()
+    }
+    // Alt+wheel: live zoom-factor control — down to 1x for the full page,
+    // up towards zoomMax for a closer follow (this-tab only, like the cursor)
+    const onWheel = (ev) => {
+      if (!ev.altKey) return
+      ev.preventDefault()
+      const dir = ev.deltaY < 0 ? 1 : -1
+      st.factor = Math.min(opts.zoomMax, Math.max(1, Math.round((st.factor + dir * opts.zoomStep) * 10) / 10))
+      st.tzoom = st.factor
       st.lastMove = Date.now()
     }
     const onDown = (ev) => {
@@ -154,12 +167,14 @@ const ReelSpot = (() => {
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mousedown', onDown)
     document.addEventListener('mouseleave', onLeave)
+    if (opts.zoomWheel) document.addEventListener('wheel', onWheel, { passive: false })
 
     const pipe = { video, camVideo, cam, canvas, raf: 0, stream: null, dead: false, detach: null }
     pipe.detach = () => {
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('mouseleave', onLeave)
+      if (opts.zoomWheel) document.removeEventListener('wheel', onWheel)
     }
 
     const draw = () => {
