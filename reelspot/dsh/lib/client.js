@@ -27,7 +27,7 @@ window.__ModuleLoader__.load({
 		    zoomWheel: true,         // Alt+mouse-wheel adjusts the zoom factor live (1x = full view)
 		    zoomMax: 3.5,            // wheel-adjustable zoom ceiling
 		    zoomStep: 0.2,           // wheel step per notch
-		    zoomMinimap: true,       // viewport minimap + factor badge while zoomed in
+		    zoomMinimap: true,       // viewport minimap in the MONITOR window (never in the video)
 		    operatorPreview: true,   // live "what is being recorded" monitor window (see below)
 		    previewWindow: null,     // optional Document PiP window handed in by the caller
 		    // Operator preview: callers with a user gesture should open
@@ -227,37 +227,6 @@ window.__ModuleLoader__.load({
 		        g.stroke()
 		      }
 		
-		      // zoom minimap: full-page thumbnail + viewport marker + factor badge,
-		      // drawn while zoomed in so the operator (and viewers) can see which
-		      // region of the page the video currently shows
-		      if (opts.zoomMinimap && st.zoom > 1.02) {
-		        const mw = Math.round(w * 0.14)
-		        const mh = Math.round(h * 0.14)
-		        const mm = Math.max(10, Math.round(mw * 0.18))
-		        const mx = opts.webcamPosition === 'top-right' && camVideo ? mm : w - mm - mw
-		        const my = mm
-		        g.globalAlpha = 0.85
-		        g.fillStyle = '#000'
-		        g.fillRect(mx - 2, my - 2, mw + 4, mh + 4)
-		        try { g.drawImage(video, mx, my, mw, mh) } catch (e) {}
-		        g.globalAlpha = 1
-		        g.lineWidth = 2
-		        g.strokeStyle = 'rgba(255,255,255,.55)'
-		        g.strokeRect(mx - 2, my - 2, mw + 4, mh + 4)
-		        g.strokeStyle = 'rgba(255,213,74,.95)'
-		        g.strokeRect(mx + (sx0 / w) * mw, my + (sy0 / h) * mh, (vw / w) * mw, (vh / h) * mh)
-		        // factor badge, briefly after wheel adjustments
-		        if (Date.now() - st.factorAt < 1500) {
-		          const label = st.factor.toFixed(1) + '×'
-		          g.font = 'bold ' + Math.max(14, Math.round(mw * 0.22)) + 'px system-ui, sans-serif'
-		          const tw = g.measureText(label).width
-		          g.fillStyle = 'rgba(0,0,0,.65)'
-		          g.fillRect(mx + mw - tw - 14, my + mh - 26, tw + 12, 24)
-		          g.fillStyle = '#ffd54a'
-		          g.fillText(label, mx + mw - tw - 8, my + mh - 8)
-		        }
-		      }
-		
 		      // cursor fx: highlight ring + click ripples (mapped through the zoom transform)
 		      if (opts.cursorFx) {
 		        const mapX = (x) => (x - sx0) * st.zoom
@@ -281,11 +250,43 @@ window.__ModuleLoader__.load({
 		        }
 		      }
 		
-		      // operator preview blit (every 2nd frame, canvas-to-canvas, no encoding)
+		      // Operator preview blit (every 2nd frame, canvas-to-canvas, no encoding).
+		      // The minimap and the factor badge are OPERATOR aids: they are drawn
+		      // here, onto the monitor canvas ONLY — never onto the recorded canvas,
+		      // so they can never end up in the produced video.
 		      if (pipe.previewCtx) {
 		        pipe.previewFrame = (pipe.previewFrame || 0) + 1
 		        if (pipe.previewFrame % 2 === 0) {
-		          try { pipe.previewCtx.drawImage(canvas, 0, 0, pipe.previewW, pipe.previewH) } catch (e) {}
+		          const p = pipe.previewCtx
+		          const pw = pipe.previewW
+		          const ph = pipe.previewH
+		          try {
+		            p.drawImage(canvas, 0, 0, pw, ph)
+		            if (opts.zoomMinimap && st.zoom > 1.02) {
+		              const mw = Math.round(pw * 0.3)
+		              const mh = Math.round(ph * 0.3)
+		              const mm = Math.max(6, Math.round(mw * 0.14))
+		              const mx = pw - mm - mw
+		              const my = mm
+		              p.globalAlpha = 0.85
+		              p.fillStyle = '#000'
+		              p.fillRect(mx - 2, my - 2, mw + 4, mh + 4)
+		              try { p.drawImage(video, mx, my, mw, mh) } catch (e) {}
+		              p.globalAlpha = 1
+		              p.lineWidth = 1.5
+		              p.strokeStyle = 'rgba(255,255,255,.55)'
+		              p.strokeRect(mx - 2, my - 2, mw + 4, mh + 4)
+		              p.strokeStyle = 'rgba(255,213,74,.95)'
+		              p.strokeRect(mx + (sx0 / w) * mw, my + (sy0 / h) * mh, (vw / w) * mw, (vh / h) * mh)
+		            }
+		            const label = st.zoom > 1.02 ? st.zoom.toFixed(1) + '×' : '全景 1.0×'
+		            p.font = 'bold 13px system-ui, sans-serif'
+		            const tw = p.measureText(label).width
+		            p.fillStyle = 'rgba(0,0,0,.6)'
+		            p.fillRect(8, ph - 27, tw + 12, 21)
+		            p.fillStyle = '#ffd54a'
+		            p.fillText(label, 14, ph - 12)
+		          } catch (e) {}
 		        }
 		      }
 		
