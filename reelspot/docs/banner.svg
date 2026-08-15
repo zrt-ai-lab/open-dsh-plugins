@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="200" viewBox="0 0 880 200" font-family="Segoe UI, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14161c"/>
+      <stop offset="1" stop-color="#1e2230"/>
+    </linearGradient>
+    <linearGradient id="acc" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4f7cff"/>
+      <stop offset="1" stop-color="#8a5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect width="880" height="200" rx="18" fill="url(#bg)"/>
+  <!-- focus corners -->
+  <g stroke="#4f7cff" stroke-width="5" stroke-linecap="round" fill="none" opacity="0.9">
+    <path d="M56 96 L56 76 L76 76"/>
+    <path d="M184 76 L204 76 L204 96"/>
+    <path d="M204 136 L204 156 L184 156"/>
+    <path d="M76 156 L56 156 L56 136"/>
+  </g>
+  <!-- record dot -->
+  <circle cx="130" cy="116" r="26" fill="#e5484d"/>
+  <circle cx="130" cy="116" r="38" fill="none" stroke="#e5484d" stroke-width="3" opacity="0.35"/>
+  <!-- wordmark -->
+  <text x="250" y="112" font-size="64" font-weight="700" fill="#f2f4f8">Reel<tspan fill="url(#acc)">Spot</tspan></text>
+  <text x="253" y="152" font-size="21" fill="#9aa3b5">Screen recorder plugin for the DeepSeek Harness</text>
+  <!-- feature chips -->
+  <g font-size="16" fill="#cdd3e0">
+    <rect x="560" y="52" width="90" height="30" rx="15" fill="#ffffff" opacity="0.07"/>
+    <text x="605" y="72" text-anchor="middle">MP4</text>
+    <rect x="662" y="52" width="118" height="30" rx="15" fill="#ffffff" opacity="0.07"/>
+    <text x="721" y="72" text-anchor="middle">聚焦放大</text>
+    <rect x="560" y="94" width="132" height="30" rx="15" fill="#ffffff" opacity="0.07"/>
+    <text x="626" y="114" text-anchor="middle">摄像头气泡</text>
+    <rect x="704" y="94" width="104" height="30" rx="15" fill="#ffffff" opacity="0.07"/>
+    <text x="756" y="114" text-anchor="middle">麦克风</text>
+    <rect x="560" y="136" width="148" height="30" rx="15" fill="#ffffff" opacity="0.07"/>
+    <text x="634" y="156" text-anchor="middle">npx 一键安装</text>
+  </g>
+</svg>

@@ -17,11 +17,17 @@ window.__ModuleLoader__.load({
 		
 		  const DEFAULTS = {
 		    mic: true,               // request the microphone and mix it in
+		    webcam: false,           // webcam bubble overlay (needs the compose pipe)
+		    webcamSize: 0.18,        // bubble diameter as a fraction of frame width
+		    webcamPosition: 'bottom-right', // bottom-right | bottom-left | top-right | top-left
+		    webcamMirror: true,      // mirror the webcam (self-view convention)
 		    zoom: false,             // cursor-follow zoom pipeline (canvas)
 		    zoomFactor: 1.8,         // magnification while the cursor is active
 		    zoomIdleMs: 2000,        // idle delay before zooming back out
+		    cursorFx: false,         // cursor highlight ring + click ripples (this-tab only)
+		    countdown: 3,            // seconds before recording starts (0 = off)
 		    frameRate: 30,
-		    maxWidth: 1920,          // zoom-pipeline canvas width cap
+		    maxWidth: 1920,          // compose-pipeline canvas width cap
 		    videoBitsPerSecond: 6000000,
 		    audioBitsPerSecond: 192000,
 		    filePrefix: 'reelspot',
@@ -56,13 +62,25 @@ window.__ModuleLoader__.load({
 		      + '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds()) + '.' + ext
 		  }
 		
+		  function makeHiddenVideo(stream) {
+		    const video = document.createElement('video')
+		    video.muted = true
+		    video.playsInline = true
+		    video.style.display = 'none'
+		    video.srcObject = stream
+		    document.body.append(video)
+		    return video
+		  }
+		
 		  /**
-		   * Canvas zoom pipeline: display track -> hidden <video> -> zoomed canvas -> captureStream.
-		   * The cursor position is only knowable while the pointer is over THIS page, so
-		   * cursor-follow zoom works when recording this tab; for other windows the view
-		   * simply stays at the wide shot (browser limitation, not a bug).
+		   * Compose pipeline: display track (+ optional webcam) -> hidden <video>s ->
+		   * canvas (zoom transform, webcam bubble, cursor fx) -> captureStream.
+		   *
+		   * The cursor position is only knowable while the pointer is over THIS page,
+		   * so cursor-follow zoom and cursor fx only track when recording this tab;
+		   * for other windows the view stays at the wide shot (browser limitation).
 		   */
-		  async function createZoomPipe(display, opts) {
+		  async function createComposePipe(display, opts) {
 		    const srcTrack = display.getVideoTracks()[0]
 		    if (!srcTrack) return null
 		    let w = 1920
@@ -75,32 +93,69 @@ window.__ModuleLoader__.load({
 		    w = Math.max(2, Math.round(w * scale))
 		    h = Math.max(2, Math.round(h * scale))
 		
-		    const video = document.createElement('video')
-		    video.muted = true
-		    video.playsInline = true
-		    video.style.display = 'none'
-		    video.srcObject = new MediaStream([srcTrack])
-		    document.body.append(video)
+		    const video = makeHiddenVideo(new MediaStream([srcTrack]))
 		    try { await video.play() } catch (e) {}
+		
+		    // webcam bubble source
+		    let cam = null
+		    let camVideo = null
+		    if (opts.webcam) {
+		      try {
+		        cam = await navigator.mediaDevices.getUserMedia({ video: { width: 1280 }, audio: false })
+		        camVideo = makeHiddenVideo(cam)
+		        try { await camVideo.play() } catch (e) {}
+		      } catch (e) {
+		        cam = null // webcam denied/unavailable — record without it
+		      }
+		    }
 		
 		    const canvas = document.createElement('canvas')
 		    canvas.width = w
 		    canvas.height = h
 		    const g = canvas.getContext('2d')
-		    if (!g) { video.remove(); return null }
+		    if (!g) {
+		      video.remove()
+		      stopStream(cam)
+		      if (camVideo) camVideo.remove()
+		      return null
+		    }
 		
-		    const st = { zoom: 1, tzoom: 1, cx: w / 2, cy: h / 2, tx: w / 2, ty: h / 2, lastMove: 0 }
-		    const onMove = (ev) => {
+		    const st = {
+		      zoom: 1, tzoom: 1,
+		      cx: w / 2, cy: h / 2, tx: w / 2, ty: h / 2,
+		      lastMove: 0, cursorX: null, cursorY: null, ripples: [],
+		    }
+		    const toSource = (ev) => {
 		      const iw = (typeof window !== 'undefined' && window.innerWidth) || w
 		      const ih = (typeof window !== 'undefined' && window.innerHeight) || h
-		      st.tx = (ev.clientX / iw) * w
-		      st.ty = (ev.clientY / ih) * h
+		      return [(ev.clientX / iw) * w, (ev.clientY / ih) * h]
+		    }
+		    const onMove = (ev) => {
+		      const [sx, sy] = toSource(ev)
+		      st.tx = sx
+		      st.ty = sy
+		      st.cursorX = sx
+		      st.cursorY = sy
 		      st.tzoom = opts.zoomFactor
 		      st.lastMove = Date.now()
 		    }
+		    const onDown = (ev) => {
+		      const [sx, sy] = toSource(ev)
+		      st.ripples.push({ x: sx, y: sy, t: Date.now() })
+		      if (st.ripples.length > 12) st.ripples.shift()
+		    }
+		    const onLeave = () => { st.cursorX = null; st.cursorY = null }
 		    document.addEventListener('mousemove', onMove)
+		    document.addEventListener('mousedown', onDown)
+		    document.addEventListener('mouseleave', onLeave)
 		
-		    const pipe = { video, canvas, raf: 0, onMove, stream: null, dead: false }
+		    const pipe = { video, camVideo, cam, canvas, raf: 0, stream: null, dead: false, detach: null }
+		    pipe.detach = () => {
+		      document.removeEventListener('mousemove', onMove)
+		      document.removeEventListener('mousedown', onDown)
+		      document.removeEventListener('mouseleave', onLeave)
+		    }
+		
 		    const draw = () => {
 		      if (pipe.dead) return
 		      if (Date.now() - st.lastMove > opts.zoomIdleMs) st.tzoom = 1
@@ -111,24 +166,83 @@ window.__ModuleLoader__.load({
 		      const vh = h / st.zoom
 		      const cx = Math.min(Math.max(st.cx, vw / 2), w - vw / 2)
 		      const cy = Math.min(Math.max(st.cy, vh / 2), h - vh / 2)
+		      const sx0 = cx - vw / 2
+		      const sy0 = cy - vh / 2
 		      g.fillStyle = '#000'
 		      g.fillRect(0, 0, w, h)
-		      try { g.drawImage(video, cx - vw / 2, cy - vh / 2, vw, vh, 0, 0, w, h) } catch (e) {}
+		      try { g.drawImage(video, sx0, sy0, vw, vh, 0, 0, w, h) } catch (e) {}
+		
+		      // webcam bubble
+		      if (camVideo) {
+		        const diameter = Math.round(w * opts.webcamSize)
+		        const radius = diameter / 2
+		        const margin = Math.round(diameter * 0.25)
+		        const bx = opts.webcamPosition.indexOf('left') >= 0 ? margin + radius : w - margin - radius
+		        const by = opts.webcamPosition.indexOf('top') >= 0 ? margin + radius : h - margin - radius
+		        const cw = camVideo.videoWidth || 1280
+		        const ch = camVideo.videoHeight || 720
+		        const crop = Math.min(cw, ch)
+		        g.save()
+		        g.beginPath()
+		        g.arc(bx, by, radius, 0, Math.PI * 2)
+		        g.closePath()
+		        g.clip()
+		        g.fillStyle = '#000'
+		        g.fillRect(bx - radius, by - radius, diameter, diameter)
+		        if (opts.webcamMirror) {
+		          g.translate(bx, by)
+		          g.scale(-1, 1)
+		          g.translate(-bx, -by)
+		        }
+		        try { g.drawImage(camVideo, (cw - crop) / 2, (ch - crop) / 2, crop, crop, bx - radius, by - radius, diameter, diameter) } catch (e) {}
+		        g.restore()
+		        g.beginPath()
+		        g.arc(bx, by, radius, 0, Math.PI * 2)
+		        g.lineWidth = Math.max(2, Math.round(diameter * 0.03))
+		        g.strokeStyle = 'rgba(255,255,255,.9)'
+		        g.stroke()
+		      }
+		
+		      // cursor fx: highlight ring + click ripples (mapped through the zoom transform)
+		      if (opts.cursorFx) {
+		        const mapX = (x) => (x - sx0) * st.zoom
+		        const mapY = (y) => (y - sy0) * st.zoom
+		        if (st.cursorX !== null) {
+		          g.beginPath()
+		          g.arc(mapX(st.cursorX), mapY(st.cursorY), 14 * st.zoom, 0, Math.PI * 2)
+		          g.lineWidth = 3
+		          g.strokeStyle = 'rgba(255,213,74,.95)'
+		          g.stroke()
+		        }
+		        const now = Date.now()
+		        st.ripples = st.ripples.filter((r) => now - r.t < 600)
+		        for (const r of st.ripples) {
+		          const t = (now - r.t) / 600
+		          g.beginPath()
+		          g.arc(mapX(r.x), mapY(r.y), (8 + t * 46) * st.zoom, 0, Math.PI * 2)
+		          g.lineWidth = 3 * (1 - t) + 1
+		          g.strokeStyle = 'rgba(255,213,74,' + (0.9 * (1 - t)).toFixed(3) + ')'
+		          g.stroke()
+		        }
+		      }
+		
 		      pipe.raf = requestAnimationFrame(draw)
 		    }
 		    pipe.raf = requestAnimationFrame(draw)
 		    try { pipe.stream = canvas.captureStream(opts.frameRate) } catch (e) { pipe.stream = null }
-		    if (!pipe.stream) { destroyZoomPipe(pipe); return null }
+		    if (!pipe.stream) { destroyComposePipe(pipe); return null }
 		    return pipe
 		  }
 		
-		  function destroyZoomPipe(pipe) {
+		  function destroyComposePipe(pipe) {
 		    if (!pipe) return
 		    pipe.dead = true
 		    try { cancelAnimationFrame(pipe.raf) } catch (e) {}
-		    try { document.removeEventListener('mousemove', pipe.onMove) } catch (e) {}
+		    try { pipe.detach() } catch (e) {}
 		    stopStream(pipe.stream)
+		    stopStream(pipe.cam)
 		    try { pipe.video.srcObject = null; pipe.video.remove() } catch (e) {}
+		    if (pipe.camVideo) { try { pipe.camVideo.srcObject = null; pipe.camVideo.remove() } catch (e) {} }
 		  }
 		
 		  /**
@@ -136,35 +250,44 @@ window.__ModuleLoader__.load({
 		   *
 		   * @param {object} [options] see DEFAULTS
 		   * @returns {{
-		   *   start: () => Promise<{audioMode:string, zoomed:boolean, ext:string, mime:string} | null>,
+		   *   start: () => Promise<{audioMode:string, zoomed:boolean, webcam:boolean, ext:string, mime:string} | null>,
 		   *   stop: () => void,
-		   *   getState: () => 'idle' | 'recording',
-		   *   on: (event: 'state' | 'stop' | 'error', fn: Function) => () => void,
+		   *   pause: () => void,
+		   *   resume: () => void,
+		   *   getState: () => 'idle' | 'countdown' | 'recording' | 'paused',
+		   *   on: (event: 'state' | 'countdown' | 'stop' | 'error', fn: Function) => () => void,
 		   * }}
 		   *
 		   * Events:
-		   *   'state' -> 'idle' | 'recording'
-		   *   'stop'  -> { blob, size, name, ext, mime, audioMode, zoomed, startedAt, durationMs }
-		   *   'error' -> Error
+		   *   'state'    -> 'idle' | 'countdown' | 'recording' | 'paused'
+		   *   'countdown'-> remaining whole seconds (3, 2, 1)
+		   *   'stop'     -> { blob, size, name, ext, mime, audioMode, zoomed, webcam, startedAt, durationMs }
+		   *   'error'    -> Error (non-fatal, e.g. mic denied)
 		   *
-		   * start() resolves null when the user cancels the share picker.
+		   * start() resolves null when the user cancels the share picker or the countdown.
+		   * stop() during the countdown cancels the recording.
 		   * audioMode: 'system+mic' | 'system' | 'mic' | 'none'
 		   *   ('system' = tab/system audio from getDisplayMedia; on Windows Chrome it is
 		   *   only available for tab capture — that is a browser limitation.)
 		   */
 		  function createRecorder(options) {
 		    const opts = Object.assign({}, DEFAULTS, options || {})
-		    const listeners = { state: [], stop: [], error: [] }
+		    const listeners = { state: [], countdown: [], stop: [], error: [] }
 		    const emit = (ev, arg) => {
 		      listeners[ev].slice().forEach((fn) => { try { fn(arg) } catch (e) {} })
 		    }
 		    let active = null
 		
 		    function cleanupCapture(rec) {
-		      destroyZoomPipe(rec.pipe)
+		      destroyComposePipe(rec.pipe)
 		      stopStream(rec.display)
 		      stopStream(rec.mic)
 		      if (rec.audioCtx) { try { rec.audioCtx.close() } catch (e) {} }
+		    }
+		
+		    function netDurationMs(rec) {
+		      const end = rec.phase === 'paused' && rec.pausedAt ? rec.pausedAt : Date.now()
+		      return Math.max(0, end - rec.recordStartedAt - rec.pausedMs)
 		    }
 		
 		    function finalize() {
@@ -183,8 +306,26 @@ window.__ModuleLoader__.load({
 		        mime: rec.mime,
 		        audioMode: rec.audioMode,
 		        zoomed: rec.zoomed,
+		        webcam: !!rec.webcam,
 		        startedAt: rec.startedAt,
-		        durationMs: Date.now() - rec.startedAt,
+		        durationMs: netDurationMs(rec),
+		      })
+		    }
+		
+		    // rAF-based countdown (no timers — safe inside every sandbox)
+		    function countdownWait(seconds, rec) {
+		      return new Promise((resolve) => {
+		        const start = Date.now()
+		        let last = -1
+		        const tick = () => {
+		          if (rec.cancelled) { resolve(false); return }
+		          const elapsed = (Date.now() - start) / 1000
+		          const remaining = Math.ceil(seconds - elapsed)
+		          if (elapsed >= seconds) { resolve(true); return }
+		          if (remaining !== last) { last = remaining; emit('countdown', remaining) }
+		          requestAnimationFrame(tick)
+		        }
+		        requestAnimationFrame(tick)
 		      })
 		    }
 		
@@ -215,9 +356,10 @@ window.__ModuleLoader__.load({
 		        }
 		      }
 		
+		      const needsPipe = !!(opts.zoom || opts.cursorFx || opts.webcam)
 		      let pipe = null
-		      if (opts.zoom) {
-		        try { pipe = await createZoomPipe(display, opts) } catch (e) { pipe = null }
+		      if (needsPipe) {
+		        try { pipe = await createComposePipe(display, opts) } catch (e) { pipe = null }
 		      }
 		
 		      const hasSysAudio = display.getAudioTracks().length > 0
@@ -255,7 +397,7 @@ window.__ModuleLoader__.load({
 		          ? { mimeType: format.mime, videoBitsPerSecond: opts.videoBitsPerSecond, audioBitsPerSecond: opts.audioBitsPerSecond }
 		          : undefined)
 		      } catch (e) {
-		        destroyZoomPipe(pipe)
+		        destroyComposePipe(pipe)
 		        stopStream(display)
 		        stopStream(mic)
 		        if (audioCtx) { try { audioCtx.close() } catch (e2) {} }
@@ -266,25 +408,68 @@ window.__ModuleLoader__.load({
 		      const rec = {
 		        recorder, display, mic, audioCtx, pipe,
 		        chunks: [], mime: format.mime, ext: format.ext,
-		        startedAt: Date.now(), audioMode, zoomed: !!(pipe && pipe.stream),
+		        startedAt: Date.now(), recordStartedAt: 0,
+		        audioMode, zoomed: !!(pipe && pipe.stream && opts.zoom),
+		        webcam: !!(pipe && pipe.cam),
+		        phase: 'countdown', cancelled: false,
+		        pausedMs: 0, pausedAt: 0,
 		      }
 		      active = rec
 		      recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) rec.chunks.push(ev.data) }
 		      recorder.onstop = () => finalize()
 		      const vt = display.getVideoTracks()[0]
 		      if (vt) vt.onended = () => stop() // browser "stop sharing" UI
+		
+		      // countdown before the recorder starts rolling
+		      if (opts.countdown > 0) {
+		        emit('state', 'countdown')
+		        const proceed = await countdownWait(opts.countdown, rec)
+		        if (!proceed || active !== rec) {
+		          if (active === rec) active = null
+		          cleanupCapture(rec)
+		          emit('state', 'idle')
+		          return null
+		        }
+		      }
+		
 		      recorder.start(1000)
+		      rec.recordStartedAt = Date.now()
+		      rec.phase = 'recording'
 		      emit('state', 'recording')
-		      return { audioMode, zoomed: rec.zoomed, ext: format.ext, mime: format.mime }
+		      return { audioMode, zoomed: rec.zoomed, webcam: rec.webcam, ext: format.ext, mime: format.mime }
 		    }
 		
 		    function stop() {
 		      const rec = active
 		      if (!rec) return
+		      if (rec.phase === 'countdown') { rec.cancelled = true; return }
 		      try { rec.recorder.stop() } catch (e) { finalize() } // onstop -> finalize
 		    }
 		
-		    function getState() { return active ? 'recording' : 'idle' }
+		    function pause() {
+		      const rec = active
+		      if (!rec || rec.phase !== 'recording') return
+		      try {
+		        rec.recorder.pause()
+		        rec.phase = 'paused'
+		        rec.pausedAt = Date.now()
+		        emit('state', 'paused')
+		      } catch (e) {}
+		    }
+		
+		    function resume() {
+		      const rec = active
+		      if (!rec || rec.phase !== 'paused') return
+		      try {
+		        rec.recorder.resume()
+		        rec.pausedMs += Date.now() - rec.pausedAt
+		        rec.pausedAt = 0
+		        rec.phase = 'recording'
+		        emit('state', 'recording')
+		      } catch (e) {}
+		    }
+		
+		    function getState() { return active ? active.phase : 'idle' }
 		
 		    function on(ev, fn) {
 		      if (!listeners[ev] || typeof fn !== 'function') return () => {}
@@ -295,7 +480,7 @@ window.__ModuleLoader__.load({
 		      }
 		    }
 		
-		    return { start, stop, getState, on }
+		    return { start, stop, pause, resume, getState, on }
 		  }
 		
 		  return { createRecorder, pickFormat, isSupported }
@@ -324,11 +509,14 @@ window.__ModuleLoader__.load({
 		  '.reelspot-dot{width:8px;height:8px;border-radius:50%;background:#e5484d;flex:none}',
 		  '.reelspot-btn.recording{border-color:#e5484d;color:#e5484d;font-variant-numeric:tabular-nums}',
 		  '.reelspot-btn.recording .reelspot-dot{animation:reelspot-pulse 1.2s ease-in-out infinite}',
+		  '.reelspot-btn.paused{border-color:var(--dsw-alias-state-warn-primary,#e6a23c);color:var(--dsw-alias-state-warn-primary,#e6a23c);font-variant-numeric:tabular-nums}',
+		  '.reelspot-btn.countdown{border-color:var(--dsw-alias-brand-primary,#4f7cff);color:var(--dsw-alias-brand-primary,#4f7cff);font-weight:700}',
 		  '@keyframes reelspot-pulse{0%,100%{opacity:1}50%{opacity:.25}}',
 		  '.reelspot-tog{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:14px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.45));background:transparent;color:inherit;font-size:13px;cursor:pointer;user-select:none;font-family:inherit}',
 		  '.reelspot-tog:hover{background:rgba(127,127,127,.12)}',
 		  '.reelspot-tog.off{opacity:.4}',
 		  '.reelspot-tog.on{border-color:var(--dsw-alias-brand-primary,#4f7cff);color:var(--dsw-alias-brand-primary,#4f7cff)}',
+		  '.reelspot-tog[disabled]{opacity:.35;cursor:default}',
 		  '.reelspot-badge{background:#e5484d;color:#fff;border-radius:8px;min-width:16px;height:16px;font-size:10px;display:inline-flex;align-items:center;justify-content:center;padding:0 4px}',
 		  '.reelspot-panel{position:fixed;top:56px;right:12px;z-index:9999;width:340px;max-height:72vh;overflow:auto;background:var(--dsw-alias-bg-overlay,#222);color:var(--dsw-alias-label-primary,#eee);border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.4));border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,.35);padding:10px;font-size:12px;font-family:inherit}',
 		  '.reelspot-panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:600}',
@@ -372,65 +560,130 @@ window.__ModuleLoader__.load({
 
 		let nextId = 1
 
+		// set by the mounted component so the global keyboard shortcut can reach it
+		const shortcutToggleRef = { current: null }
+
 		function ReelSpotButton(ctx) {
 		  return function ReelSpotButtonView() {
-		    const [state, setState] = React.useState('idle') // idle | recording
+		    const [state, setState] = React.useState('idle') // idle | countdown | recording | paused
+		    const [countNum, setCountNum] = React.useState(3)
 		    const [elapsed, setElapsed] = React.useState(0)
 		    const [micOn, setMicOn] = React.useState(true)
 		    const [zoomOn, setZoomOn] = React.useState(false)
-		    const [items, setItems] = React.useState([]) // {id,name,url,blob,size,audioMode,zoomed,savedPath,saving,error}
+		    const [webcamOn, setWebcamOn] = React.useState(false)
+		    const [cursorFxOn, setCursorFxOn] = React.useState(false)
+		    const [items, setItems] = React.useState([]) // {id,name,ext,url,blob,size,audioMode,zoomed,webcam,savedPath,saving,transcoding,transcodedPath,error}
 		    const [panelOpen, setPanelOpen] = React.useState(false)
 		    const recRef = React.useRef(null) // ReelSpot recorder instance
-		    const startedAtRef = React.useRef(0)
+		    const elapsedBaseRef = React.useRef(0)
 		    const micRef = React.useRef(true)
 		    const zoomRef = React.useRef(false)
+		    const webcamRef = React.useRef(false)
+		    const cursorFxRef = React.useRef(false)
 		    const itemsRef = React.useRef([])
+		    const stateRef = React.useRef('idle')
 		    micRef.current = micOn
 		    zoomRef.current = zoomOn
+		    webcamRef.current = webcamOn
+		    cursorFxRef.current = cursorFxOn
 		    itemsRef.current = items
+		    stateRef.current = state
 
 		    const patchItem = (id, patch) => {
 		      setItems((prev) => prev.map((it) => (it.id === id ? Object.assign({}, it, patch) : it)))
 		    }
 
 		    const start = async () => {
-		      const recorder = ReelSpot.createRecorder({ mic: micRef.current, zoom: zoomRef.current })
+		      const recorder = ReelSpot.createRecorder({
+		        mic: micRef.current,
+		        zoom: zoomRef.current,
+		        webcam: webcamRef.current,
+		        cursorFx: cursorFxRef.current,
+		        countdown: 3,
+		      })
 		      recRef.current = recorder
+		      recorder.on('countdown', (n) => setCountNum(n))
 		      recorder.on('stop', (result) => {
 		        recRef.current = null
 		        setState('idle')
 		        setElapsed(0)
+		        elapsedBaseRef.current = 0
 		        const item = {
 		          id: nextId++,
 		          name: result.name,
+		          ext: result.ext,
 		          blob: result.blob,
 		          url: URL.createObjectURL(result.blob),
 		          size: result.size,
 		          audioMode: result.audioMode,
 		          zoomed: result.zoomed,
+		          webcam: result.webcam,
 		          savedPath: '',
 		          saving: false,
+		          transcoding: false,
+		          transcodedPath: '',
 		          error: '',
 		        }
 		        setItems((prev) => [item].concat(prev))
 		        setPanelOpen(true)
 		      })
 		      recorder.on('state', (s) => {
-		        if (s === 'recording') {
-		          startedAtRef.current = Date.now()
-		          setElapsed(0)
-		          setState('recording')
-		        }
+		        if (s === 'recording') setState('recording')
+		        else if (s === 'paused') {
+		          elapsedBaseRef.current = elapsedRefNow()
+		          setState('paused')
+		        } else if (s === 'countdown') setState('countdown')
+		        else if (s === 'idle') setState('idle')
 		      })
 		      recorder.on('error', (e) => console.error('ReelSpot:', e && e.message ? e.message : e))
 		      const begun = await recorder.start()
-		      if (!begun && recorder.getState() === 'idle') recRef.current = null // cancelled
+		      if (!begun && recorder.getState() === 'idle') {
+		        recRef.current = null
+		        setState('idle') // picker or countdown cancelled
+		      }
 		    }
 
 		    const stop = () => {
 		      const recorder = recRef.current
 		      if (recorder) recorder.stop()
 		    }
+
+		    const pauseOrResume = () => {
+		      const recorder = recRef.current
+		      if (!recorder) return
+		      if (recorder.getState() === 'paused') recorder.resume()
+		      else recorder.pause()
+		    }
+
+		    // elapsed helpers: accumulated base (pause) + live segment (ticker)
+		    let elapsedRefNow = () => elapsed
+		    React.useEffect(() => { elapsedRefNow = () => elapsed })
+
+		    // elapsed ticker while actively recording (frozen while paused)
+		    React.useEffect(() => {
+		      if (state !== 'recording') return undefined
+		      const segStart = Date.now()
+		      return ctx.interval(() => {
+		        setElapsed(elapsedBaseRef.current + Math.floor((Date.now() - segStart) / 1000))
+		      }, 500)
+		    }, [state])
+
+		    // expose start/stop toggle to the global keyboard shortcut
+		    React.useEffect(() => {
+		      shortcutToggleRef.current = () => {
+		        const s = stateRef.current
+		        if (s === 'recording' || s === 'paused' || s === 'countdown') stop()
+		        else start()
+		      }
+		      return () => { shortcutToggleRef.current = null }
+		    })
+
+		    // unmount cleanup: halt capture, revoke URLs
+		    React.useEffect(() => () => {
+		      const recorder = recRef.current
+		      if (recorder) { recRef.current = null; try { recorder.stop() } catch (e) {} }
+		      itemsRef.current.forEach((it) => { try { URL.revokeObjectURL(it.url) } catch (e) {} })
+		    }, [])
 
 		    const saveToWorkspace = async (item) => {
 		      patchItem(item.id, { saving: true, error: '' })
@@ -449,64 +702,74 @@ window.__ModuleLoader__.load({
 		      }
 		    }
 
+		    const transcode = async (item) => {
+		      patchItem(item.id, { transcoding: true, error: '' })
+		      try {
+		        const base64 = await toBase64(item.blob)
+		        const res = await fetch('/dsh-reelspot/transcode', {
+		          method: 'POST',
+		          headers: { 'content-type': 'application/json' },
+		          body: JSON.stringify({ name: item.name, base64 }),
+		        })
+		        const data = await res.json()
+		        if (data && data.ok) patchItem(item.id, { transcoding: false, transcodedPath: String(data.path || '') })
+		        else patchItem(item.id, { transcoding: false, error: '转码失败: ' + (data && data.error ? data.error : 'HTTP ' + res.status) })
+		      } catch (e) {
+		        patchItem(item.id, { transcoding: false, error: '转码失败: ' + String(e && e.message ? e.message : e) })
+		      }
+		    }
+
 		    const removeItem = (item) => {
 		      try { URL.revokeObjectURL(item.url) } catch (e) {}
 		      setItems((prev) => prev.filter((it) => it.id !== item.id))
 		    }
 
-		    // elapsed ticker while recording
-		    React.useEffect(() => {
-		      if (state !== 'recording') return undefined
-		      return ctx.interval(() => setElapsed(Math.floor((Date.now() - startedAtRef.current) / 1000)), 500)
-		    }, [state])
-
-		    // unmount cleanup: halt capture, revoke URLs
-		    React.useEffect(() => () => {
-		      const recorder = recRef.current
-		      if (recorder) { recRef.current = null; try { recorder.stop() } catch (e) {} }
-		      itemsRef.current.forEach((it) => { try { URL.revokeObjectURL(it.url) } catch (e) {} })
-		    }, [])
-
+		    const busy = state !== 'idle'
 		    const recording = state === 'recording'
-		    const label = recording
-		      ? pad2(Math.floor(elapsed / 60)) + ':' + pad2(elapsed % 60)
-		      : '录屏'
+		    const paused = state === 'paused'
+		    const counting = state === 'countdown'
 
-		    const zoomButton = React.createElement('button', {
-		      className: 'reelspot-tog' + (zoomOn ? ' on' : ''),
-		      title: zoomOn
-		        ? '放大聚焦：开（点击关闭）。光标移动时自动放大跟随，静止后缩回；仅录制本标签页时可跟踪光标'
-		        : '放大聚焦：关（点击开启）',
-		      disabled: recording,
-		      onClick: () => setZoomOn(!zoomOn),
-		    }, '🔍')
+		    const tog = (on, setOn, title, icon) => React.createElement('button', {
+		      className: 'reelspot-tog' + (on ? ' on' : ' off'),
+		      title,
+		      disabled: busy,
+		      onClick: () => setOn(!on),
+		    }, icon)
 
-		    const micButton = React.createElement('button', {
-		      className: 'reelspot-tog' + (micOn ? '' : ' off'),
-		      title: micOn ? '麦克风：开（点击关闭）' : '麦克风：关（点击开启）',
-		      disabled: recording,
-		      onClick: () => setMicOn(!micOn),
-		    }, '🎤')
+		    const label = counting ? String(countNum)
+		      : (recording || paused)
+		        ? pad2(Math.floor(elapsed / 60)) + ':' + pad2(elapsed % 60)
+		        : '录屏'
 
-		    const button = React.createElement('button', {
-		      className: 'reelspot-btn' + (recording ? ' recording' : ''),
-		      title: recording
-		        ? '停止录屏 (ReelSpot)'
+		    const mainButton = React.createElement('button', {
+		      className: 'reelspot-btn' + (recording ? ' recording' : '') + (paused ? ' paused' : '') + (counting ? ' countdown' : ''),
+		      title: counting ? '倒计时中，点击取消'
+		        : recording ? '停止录屏 (Alt+Shift+R)'
+		        : paused ? '已暂停，点击停止'
 		        : items.length
-		          ? '开始录屏；点击查看已录 ' + items.length + ' 段视频'
-		          : '开始录屏：选择屏幕 / 窗口 / 标签页 (ReelSpot)',
+		          ? '开始录屏 (Alt+Shift+R)；点击查看已录 ' + items.length + ' 段视频'
+		          : '开始录屏 (Alt+Shift+R)：选择屏幕 / 窗口 / 标签页',
 		      onClick: () => {
-		        if (recording) { stop(); return }
+		        if (counting) { stop(); return }
+		        if (recording || paused) { stop(); return }
 		        if (items.length && !panelOpen) { setPanelOpen(true); return }
 		        start()
 		      },
 		    },
 		      React.createElement('span', { className: 'reelspot-dot' }),
 		      label,
-		      !recording && items.length
+		      !busy && items.length
 		        ? React.createElement('span', { className: 'reelspot-badge' }, String(items.length))
 		        : null,
 		    )
+
+		    const pauseButton = (recording || paused)
+		      ? React.createElement('button', {
+		          className: 'reelspot-tog',
+		          title: paused ? '继续录制' : '暂停录制',
+		          onClick: pauseOrResume,
+		        }, paused ? '▶' : '⏸')
+		      : null
 
 		    const panel = panelOpen && items.length
 		      ? React.createElement('div', { className: 'reelspot-panel' },
@@ -517,7 +780,8 @@ window.__ModuleLoader__.load({
 		          items.map((it) => React.createElement('div', { className: 'reelspot-item', key: it.id },
 		            React.createElement('video', { className: 'reelspot-video', src: it.url, controls: true, preload: 'metadata' }),
 		            React.createElement('div', { className: 'reelspot-meta' },
-		              it.name + ' · ' + fmtSize(it.size) + ' · ' + audioText(it.audioMode) + (it.zoomed ? ' · 聚焦' : '')),
+		              it.name + ' · ' + fmtSize(it.size) + ' · ' + audioText(it.audioMode)
+		              + (it.zoomed ? ' · 聚焦' : '') + (it.webcam ? ' · 摄像头' : '')),
 		            React.createElement('div', { className: 'reelspot-ops' },
 		              React.createElement('a', { className: 'reelspot-op', href: it.url, download: it.name }, '下载'),
 		              React.createElement('button', {
@@ -525,16 +789,32 @@ window.__ModuleLoader__.load({
 		                disabled: it.saving || !!it.savedPath,
 		                onClick: () => saveToWorkspace(it),
 		              }, it.saving ? '保存中…' : it.savedPath ? '已存到工作区' : '存到工作区'),
+		              it.ext === 'webm'
+		                ? React.createElement('button', {
+		                    className: 'reelspot-op',
+		                    disabled: it.transcoding || !!it.transcodedPath,
+		                    title: '需要主机安装 ffmpeg',
+		                    onClick: () => transcode(it),
+		                  }, it.transcoding ? '转码中…' : it.transcodedPath ? '已转 MP4' : '转 MP4')
+		                : null,
 		              React.createElement('button', { className: 'reelspot-op', onClick: () => removeItem(it) }, '删除'),
 		            ),
 		            it.savedPath ? React.createElement('div', { className: 'reelspot-path' }, it.savedPath) : null,
+		            it.transcodedPath ? React.createElement('div', { className: 'reelspot-path' }, it.transcodedPath) : null,
 		            it.error ? React.createElement('div', { className: 'reelspot-err' }, it.error) : null,
 		          )),
 		        )
 		      : null
 
 		    return React.createElement(React.Fragment, null,
-		      React.createElement('span', { className: 'reelspot-wrap' }, zoomButton, micButton, button),
+		      React.createElement('span', { className: 'reelspot-wrap' },
+		        tog(cursorFxOn, setCursorFxOn, cursorFxOn ? '光标高亮+点击波纹：开（仅录本标签页时跟踪）' : '光标高亮+点击波纹：关（点击开启）', '🖱️'),
+		        tog(zoomOn, setZoomOn, zoomOn ? '放大聚焦：开（点击关闭）' : '放大聚焦：关（点击开启，光标移动时自动放大跟随）', '🔍'),
+		        tog(webcamOn, setWebcamOn, webcamOn ? '摄像头气泡：开（点击关闭）' : '摄像头气泡：关（点击开启）', '📹'),
+		        tog(micOn, setMicOn, micOn ? '麦克风：开（点击关闭）' : '麦克风：关（点击开启）', '🎤'),
+		        pauseButton,
+		        mainButton,
+		      ),
 		      panel,
 		    )
 		  }
@@ -549,6 +829,18 @@ window.__ModuleLoader__.load({
 		    document.head.append(tag)
 		    return () => tag.remove()
 		  }, 'dsh-reelspot: styles')
+
+		  // global keyboard shortcut: Alt+Shift+R toggles recording
+		  ctx.effect(() => {
+		    const handler = (e) => {
+		      if (e.altKey && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
+		        e.preventDefault()
+		        if (shortcutToggleRef.current) shortcutToggleRef.current()
+		      }
+		    }
+		    document.addEventListener('keydown', handler)
+		    return () => document.removeEventListener('keydown', handler)
+		  }, 'dsh-reelspot: shortcut')
 
 		  const View = ReelSpotButton(ctx)
 		  ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register(

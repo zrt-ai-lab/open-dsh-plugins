@@ -1,13 +1,14 @@
 /*
  * ReelSpot core — zero-dependency browser screen recorder.
  *
- * Screen / window / tab capture + microphone mixing + cursor-follow zoom
- * + MP4 (H.264/AAC) output with WebM fallback.
+ * Screen / window / tab capture + microphone mixing + webcam bubble +
+ * cursor-follow zoom + cursor highlight/click ripples + countdown +
+ * pause/resume + MP4 (H.264/AAC) output with WebM fallback.
  *
  * Plain script, no imports/exports:
  *   - Browser <script>: sets window.ReelSpot
  *   - Node-like loader: module.exports
- *   - DSH build (build.mjs): the marked core region is inlined into the plugin
+ *   - DSH build (build.mjs): the marked core region is inlined into plugins
  */
 const ReelSpot = (() => {
   // __CORE_BEGIN__
@@ -22,11 +23,17 @@ const ReelSpot = (() => {
 
   const DEFAULTS = {
     mic: true,               // request the microphone and mix it in
+    webcam: false,           // webcam bubble overlay (needs the compose pipe)
+    webcamSize: 0.18,        // bubble diameter as a fraction of frame width
+    webcamPosition: 'bottom-right', // bottom-right | bottom-left | top-right | top-left
+    webcamMirror: true,      // mirror the webcam (self-view convention)
     zoom: false,             // cursor-follow zoom pipeline (canvas)
     zoomFactor: 1.8,         // magnification while the cursor is active
     zoomIdleMs: 2000,        // idle delay before zooming back out
+    cursorFx: false,         // cursor highlight ring + click ripples (this-tab only)
+    countdown: 3,            // seconds before recording starts (0 = off)
     frameRate: 30,
-    maxWidth: 1920,          // zoom-pipeline canvas width cap
+    maxWidth: 1920,          // compose-pipeline canvas width cap
     videoBitsPerSecond: 6000000,
     audioBitsPerSecond: 192000,
     filePrefix: 'reelspot',
@@ -61,13 +68,25 @@ const ReelSpot = (() => {
       + '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds()) + '.' + ext
   }
 
+  function makeHiddenVideo(stream) {
+    const video = document.createElement('video')
+    video.muted = true
+    video.playsInline = true
+    video.style.display = 'none'
+    video.srcObject = stream
+    document.body.append(video)
+    return video
+  }
+
   /**
-   * Canvas zoom pipeline: display track -> hidden <video> -> zoomed canvas -> captureStream.
-   * The cursor position is only knowable while the pointer is over THIS page, so
-   * cursor-follow zoom works when recording this tab; for other windows the view
-   * simply stays at the wide shot (browser limitation, not a bug).
+   * Compose pipeline: display track (+ optional webcam) -> hidden <video>s ->
+   * canvas (zoom transform, webcam bubble, cursor fx) -> captureStream.
+   *
+   * The cursor position is only knowable while the pointer is over THIS page,
+   * so cursor-follow zoom and cursor fx only track when recording this tab;
+   * for other windows the view stays at the wide shot (browser limitation).
    */
-  async function createZoomPipe(display, opts) {
+  async function createComposePipe(display, opts) {
     const srcTrack = display.getVideoTracks()[0]
     if (!srcTrack) return null
     let w = 1920
@@ -80,32 +99,69 @@ const ReelSpot = (() => {
     w = Math.max(2, Math.round(w * scale))
     h = Math.max(2, Math.round(h * scale))
 
-    const video = document.createElement('video')
-    video.muted = true
-    video.playsInline = true
-    video.style.display = 'none'
-    video.srcObject = new MediaStream([srcTrack])
-    document.body.append(video)
+    const video = makeHiddenVideo(new MediaStream([srcTrack]))
     try { await video.play() } catch (e) {}
+
+    // webcam bubble source
+    let cam = null
+    let camVideo = null
+    if (opts.webcam) {
+      try {
+        cam = await navigator.mediaDevices.getUserMedia({ video: { width: 1280 }, audio: false })
+        camVideo = makeHiddenVideo(cam)
+        try { await camVideo.play() } catch (e) {}
+      } catch (e) {
+        cam = null // webcam denied/unavailable — record without it
+      }
+    }
 
     const canvas = document.createElement('canvas')
     canvas.width = w
     canvas.height = h
     const g = canvas.getContext('2d')
-    if (!g) { video.remove(); return null }
+    if (!g) {
+      video.remove()
+      stopStream(cam)
+      if (camVideo) camVideo.remove()
+      return null
+    }
 
-    const st = { zoom: 1, tzoom: 1, cx: w / 2, cy: h / 2, tx: w / 2, ty: h / 2, lastMove: 0 }
-    const onMove = (ev) => {
+    const st = {
+      zoom: 1, tzoom: 1,
+      cx: w / 2, cy: h / 2, tx: w / 2, ty: h / 2,
+      lastMove: 0, cursorX: null, cursorY: null, ripples: [],
+    }
+    const toSource = (ev) => {
       const iw = (typeof window !== 'undefined' && window.innerWidth) || w
       const ih = (typeof window !== 'undefined' && window.innerHeight) || h
-      st.tx = (ev.clientX / iw) * w
-      st.ty = (ev.clientY / ih) * h
+      return [(ev.clientX / iw) * w, (ev.clientY / ih) * h]
+    }
+    const onMove = (ev) => {
+      const [sx, sy] = toSource(ev)
+      st.tx = sx
+      st.ty = sy
+      st.cursorX = sx
+      st.cursorY = sy
       st.tzoom = opts.zoomFactor
       st.lastMove = Date.now()
     }
+    const onDown = (ev) => {
+      const [sx, sy] = toSource(ev)
+      st.ripples.push({ x: sx, y: sy, t: Date.now() })
+      if (st.ripples.length > 12) st.ripples.shift()
+    }
+    const onLeave = () => { st.cursorX = null; st.cursorY = null }
     document.addEventListener('mousemove', onMove)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('mouseleave', onLeave)
 
-    const pipe = { video, canvas, raf: 0, onMove, stream: null, dead: false }
+    const pipe = { video, camVideo, cam, canvas, raf: 0, stream: null, dead: false, detach: null }
+    pipe.detach = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('mouseleave', onLeave)
+    }
+
     const draw = () => {
       if (pipe.dead) return
       if (Date.now() - st.lastMove > opts.zoomIdleMs) st.tzoom = 1
@@ -116,24 +172,83 @@ const ReelSpot = (() => {
       const vh = h / st.zoom
       const cx = Math.min(Math.max(st.cx, vw / 2), w - vw / 2)
       const cy = Math.min(Math.max(st.cy, vh / 2), h - vh / 2)
+      const sx0 = cx - vw / 2
+      const sy0 = cy - vh / 2
       g.fillStyle = '#000'
       g.fillRect(0, 0, w, h)
-      try { g.drawImage(video, cx - vw / 2, cy - vh / 2, vw, vh, 0, 0, w, h) } catch (e) {}
+      try { g.drawImage(video, sx0, sy0, vw, vh, 0, 0, w, h) } catch (e) {}
+
+      // webcam bubble
+      if (camVideo) {
+        const diameter = Math.round(w * opts.webcamSize)
+        const radius = diameter / 2
+        const margin = Math.round(diameter * 0.25)
+        const bx = opts.webcamPosition.indexOf('left') >= 0 ? margin + radius : w - margin - radius
+        const by = opts.webcamPosition.indexOf('top') >= 0 ? margin + radius : h - margin - radius
+        const cw = camVideo.videoWidth || 1280
+        const ch = camVideo.videoHeight || 720
+        const crop = Math.min(cw, ch)
+        g.save()
+        g.beginPath()
+        g.arc(bx, by, radius, 0, Math.PI * 2)
+        g.closePath()
+        g.clip()
+        g.fillStyle = '#000'
+        g.fillRect(bx - radius, by - radius, diameter, diameter)
+        if (opts.webcamMirror) {
+          g.translate(bx, by)
+          g.scale(-1, 1)
+          g.translate(-bx, -by)
+        }
+        try { g.drawImage(camVideo, (cw - crop) / 2, (ch - crop) / 2, crop, crop, bx - radius, by - radius, diameter, diameter) } catch (e) {}
+        g.restore()
+        g.beginPath()
+        g.arc(bx, by, radius, 0, Math.PI * 2)
+        g.lineWidth = Math.max(2, Math.round(diameter * 0.03))
+        g.strokeStyle = 'rgba(255,255,255,.9)'
+        g.stroke()
+      }
+
+      // cursor fx: highlight ring + click ripples (mapped through the zoom transform)
+      if (opts.cursorFx) {
+        const mapX = (x) => (x - sx0) * st.zoom
+        const mapY = (y) => (y - sy0) * st.zoom
+        if (st.cursorX !== null) {
+          g.beginPath()
+          g.arc(mapX(st.cursorX), mapY(st.cursorY), 14 * st.zoom, 0, Math.PI * 2)
+          g.lineWidth = 3
+          g.strokeStyle = 'rgba(255,213,74,.95)'
+          g.stroke()
+        }
+        const now = Date.now()
+        st.ripples = st.ripples.filter((r) => now - r.t < 600)
+        for (const r of st.ripples) {
+          const t = (now - r.t) / 600
+          g.beginPath()
+          g.arc(mapX(r.x), mapY(r.y), (8 + t * 46) * st.zoom, 0, Math.PI * 2)
+          g.lineWidth = 3 * (1 - t) + 1
+          g.strokeStyle = 'rgba(255,213,74,' + (0.9 * (1 - t)).toFixed(3) + ')'
+          g.stroke()
+        }
+      }
+
       pipe.raf = requestAnimationFrame(draw)
     }
     pipe.raf = requestAnimationFrame(draw)
     try { pipe.stream = canvas.captureStream(opts.frameRate) } catch (e) { pipe.stream = null }
-    if (!pipe.stream) { destroyZoomPipe(pipe); return null }
+    if (!pipe.stream) { destroyComposePipe(pipe); return null }
     return pipe
   }
 
-  function destroyZoomPipe(pipe) {
+  function destroyComposePipe(pipe) {
     if (!pipe) return
     pipe.dead = true
     try { cancelAnimationFrame(pipe.raf) } catch (e) {}
-    try { document.removeEventListener('mousemove', pipe.onMove) } catch (e) {}
+    try { pipe.detach() } catch (e) {}
     stopStream(pipe.stream)
+    stopStream(pipe.cam)
     try { pipe.video.srcObject = null; pipe.video.remove() } catch (e) {}
+    if (pipe.camVideo) { try { pipe.camVideo.srcObject = null; pipe.camVideo.remove() } catch (e) {} }
   }
 
   /**
@@ -141,35 +256,44 @@ const ReelSpot = (() => {
    *
    * @param {object} [options] see DEFAULTS
    * @returns {{
-   *   start: () => Promise<{audioMode:string, zoomed:boolean, ext:string, mime:string} | null>,
+   *   start: () => Promise<{audioMode:string, zoomed:boolean, webcam:boolean, ext:string, mime:string} | null>,
    *   stop: () => void,
-   *   getState: () => 'idle' | 'recording',
-   *   on: (event: 'state' | 'stop' | 'error', fn: Function) => () => void,
+   *   pause: () => void,
+   *   resume: () => void,
+   *   getState: () => 'idle' | 'countdown' | 'recording' | 'paused',
+   *   on: (event: 'state' | 'countdown' | 'stop' | 'error', fn: Function) => () => void,
    * }}
    *
    * Events:
-   *   'state' -> 'idle' | 'recording'
-   *   'stop'  -> { blob, size, name, ext, mime, audioMode, zoomed, startedAt, durationMs }
-   *   'error' -> Error
+   *   'state'    -> 'idle' | 'countdown' | 'recording' | 'paused'
+   *   'countdown'-> remaining whole seconds (3, 2, 1)
+   *   'stop'     -> { blob, size, name, ext, mime, audioMode, zoomed, webcam, startedAt, durationMs }
+   *   'error'    -> Error (non-fatal, e.g. mic denied)
    *
-   * start() resolves null when the user cancels the share picker.
+   * start() resolves null when the user cancels the share picker or the countdown.
+   * stop() during the countdown cancels the recording.
    * audioMode: 'system+mic' | 'system' | 'mic' | 'none'
    *   ('system' = tab/system audio from getDisplayMedia; on Windows Chrome it is
    *   only available for tab capture — that is a browser limitation.)
    */
   function createRecorder(options) {
     const opts = Object.assign({}, DEFAULTS, options || {})
-    const listeners = { state: [], stop: [], error: [] }
+    const listeners = { state: [], countdown: [], stop: [], error: [] }
     const emit = (ev, arg) => {
       listeners[ev].slice().forEach((fn) => { try { fn(arg) } catch (e) {} })
     }
     let active = null
 
     function cleanupCapture(rec) {
-      destroyZoomPipe(rec.pipe)
+      destroyComposePipe(rec.pipe)
       stopStream(rec.display)
       stopStream(rec.mic)
       if (rec.audioCtx) { try { rec.audioCtx.close() } catch (e) {} }
+    }
+
+    function netDurationMs(rec) {
+      const end = rec.phase === 'paused' && rec.pausedAt ? rec.pausedAt : Date.now()
+      return Math.max(0, end - rec.recordStartedAt - rec.pausedMs)
     }
 
     function finalize() {
@@ -188,8 +312,26 @@ const ReelSpot = (() => {
         mime: rec.mime,
         audioMode: rec.audioMode,
         zoomed: rec.zoomed,
+        webcam: !!rec.webcam,
         startedAt: rec.startedAt,
-        durationMs: Date.now() - rec.startedAt,
+        durationMs: netDurationMs(rec),
+      })
+    }
+
+    // rAF-based countdown (no timers — safe inside every sandbox)
+    function countdownWait(seconds, rec) {
+      return new Promise((resolve) => {
+        const start = Date.now()
+        let last = -1
+        const tick = () => {
+          if (rec.cancelled) { resolve(false); return }
+          const elapsed = (Date.now() - start) / 1000
+          const remaining = Math.ceil(seconds - elapsed)
+          if (elapsed >= seconds) { resolve(true); return }
+          if (remaining !== last) { last = remaining; emit('countdown', remaining) }
+          requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
       })
     }
 
@@ -220,9 +362,10 @@ const ReelSpot = (() => {
         }
       }
 
+      const needsPipe = !!(opts.zoom || opts.cursorFx || opts.webcam)
       let pipe = null
-      if (opts.zoom) {
-        try { pipe = await createZoomPipe(display, opts) } catch (e) { pipe = null }
+      if (needsPipe) {
+        try { pipe = await createComposePipe(display, opts) } catch (e) { pipe = null }
       }
 
       const hasSysAudio = display.getAudioTracks().length > 0
@@ -260,7 +403,7 @@ const ReelSpot = (() => {
           ? { mimeType: format.mime, videoBitsPerSecond: opts.videoBitsPerSecond, audioBitsPerSecond: opts.audioBitsPerSecond }
           : undefined)
       } catch (e) {
-        destroyZoomPipe(pipe)
+        destroyComposePipe(pipe)
         stopStream(display)
         stopStream(mic)
         if (audioCtx) { try { audioCtx.close() } catch (e2) {} }
@@ -271,25 +414,68 @@ const ReelSpot = (() => {
       const rec = {
         recorder, display, mic, audioCtx, pipe,
         chunks: [], mime: format.mime, ext: format.ext,
-        startedAt: Date.now(), audioMode, zoomed: !!(pipe && pipe.stream),
+        startedAt: Date.now(), recordStartedAt: 0,
+        audioMode, zoomed: !!(pipe && pipe.stream && opts.zoom),
+        webcam: !!(pipe && pipe.cam),
+        phase: 'countdown', cancelled: false,
+        pausedMs: 0, pausedAt: 0,
       }
       active = rec
       recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) rec.chunks.push(ev.data) }
       recorder.onstop = () => finalize()
       const vt = display.getVideoTracks()[0]
       if (vt) vt.onended = () => stop() // browser "stop sharing" UI
+
+      // countdown before the recorder starts rolling
+      if (opts.countdown > 0) {
+        emit('state', 'countdown')
+        const proceed = await countdownWait(opts.countdown, rec)
+        if (!proceed || active !== rec) {
+          if (active === rec) active = null
+          cleanupCapture(rec)
+          emit('state', 'idle')
+          return null
+        }
+      }
+
       recorder.start(1000)
+      rec.recordStartedAt = Date.now()
+      rec.phase = 'recording'
       emit('state', 'recording')
-      return { audioMode, zoomed: rec.zoomed, ext: format.ext, mime: format.mime }
+      return { audioMode, zoomed: rec.zoomed, webcam: rec.webcam, ext: format.ext, mime: format.mime }
     }
 
     function stop() {
       const rec = active
       if (!rec) return
+      if (rec.phase === 'countdown') { rec.cancelled = true; return }
       try { rec.recorder.stop() } catch (e) { finalize() } // onstop -> finalize
     }
 
-    function getState() { return active ? 'recording' : 'idle' }
+    function pause() {
+      const rec = active
+      if (!rec || rec.phase !== 'recording') return
+      try {
+        rec.recorder.pause()
+        rec.phase = 'paused'
+        rec.pausedAt = Date.now()
+        emit('state', 'paused')
+      } catch (e) {}
+    }
+
+    function resume() {
+      const rec = active
+      if (!rec || rec.phase !== 'paused') return
+      try {
+        rec.recorder.resume()
+        rec.pausedMs += Date.now() - rec.pausedAt
+        rec.pausedAt = 0
+        rec.phase = 'recording'
+        emit('state', 'recording')
+      } catch (e) {}
+    }
+
+    function getState() { return active ? active.phase : 'idle' }
 
     function on(ev, fn) {
       if (!listeners[ev] || typeof fn !== 'function') return () => {}
@@ -300,7 +486,7 @@ const ReelSpot = (() => {
       }
     }
 
-    return { start, stop, getState, on }
+    return { start, stop, pause, resume, getState, on }
   }
 
   return { createRecorder, pickFormat, isSupported }

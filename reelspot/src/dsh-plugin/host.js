@@ -37,5 +37,42 @@ return {
         return { ok: false, error: String(e && e.message ? e.message : e).slice(0, 300) }
       }
     })
+
+    // webm -> mp4 via ffmpeg (PATH or REELSPOT_FFMPEG); keeps only the .mp4
+    harness.handle('transcode', async (args) => {
+      const shell = ctx.get('shell')
+      const policy = ctx.get('sandboxPolicy')
+      if (!shell) return { ok: false, error: 'host shell service unavailable' }
+      const root = policy && policy.workspaceRoot ? String(policy.workspaceRoot) : ''
+      if (!root) return { ok: false, error: 'no workspace root' }
+      const base64 = args && args.base64 ? String(args.base64) : ''
+      if (!base64) return { ok: false, error: 'empty payload' }
+      const base = (args && args.name ? String(args.name) : 'reelspot-' + Date.now() + '.webm')
+        .replace(/[^\w.-]+/g, '_').replace(/\.webm$/i, '')
+      const dir = root + '\\recordings'
+      const src = dir + '\\' + base + '.webm'
+      const out = dir + '\\' + base + '.mp4'
+      const esc = (p) => p.replace(/'/g, "''")
+      // step 1: write the webm from stdin base64
+      const writeCmd = 'pwsh -NoProfile -Command "New-Item -ItemType Directory -Force -Path \'' + esc(dir) + '\' | Out-Null; $b64=[Console]::In.ReadToEnd(); [IO.File]::WriteAllBytes(\'' + esc(src) + '\', [Convert]::FromBase64String($b64.Trim()))"'
+      try {
+        const w = await shell.run(shell.resolve({ command: writeCmd, stdin: base64, workdir: root, timeoutMs: 120000 }))
+        if (!w || w.exitCode !== 0) return { ok: false, error: 'write failed: ' + (w && w.stderr && w.stderr.text ? String(w.stderr.text).slice(0, 300) : 'unknown') }
+      } catch (e) {
+        return { ok: false, error: String(e && e.message ? e.message : e).slice(0, 300) }
+      }
+      // step 2: locate ffmpeg and transcode
+      const ff = '$ff = $env:REELSPOT_FFMPEG; if (-not $ff) { $ff = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source }; if (-not $ff) { Write-Error \'NO_FFMPEG\'; exit 3 }'
+      const cmd = 'pwsh -NoProfile -Command "' + ff + '; & $ff -y -i \'' + esc(src) + '\' -c:v libx264 -preset veryfast -crf 21 -c:a aac -b:a 192k -movflags +faststart \'' + esc(out) + '\'; if ($LASTEXITCODE -eq 0) { Remove-Item -Force \'' + esc(src) + '\' } else { exit $LASTEXITCODE }"'
+      try {
+        const r = await shell.run(shell.resolve({ command: cmd, workdir: root, timeoutMs: 600000 }))
+        if (r && r.exitCode === 0) return { ok: true, path: out }
+        if (r && r.exitCode === 3) return { ok: false, error: '主机未检测到 ffmpeg —— 安装后重试（winget install ffmpeg），或设置环境变量 REELSPOT_FFMPEG' }
+        const errText = r && r.stderr && r.stderr.text ? String(r.stderr.text).slice(0, 300) : 'unknown'
+        return { ok: false, error: 'ffmpeg 转码失败: ' + errText }
+      } catch (e) {
+        return { ok: false, error: String(e && e.message ? e.message : e).slice(0, 300) }
+      }
+    })
   },
 }

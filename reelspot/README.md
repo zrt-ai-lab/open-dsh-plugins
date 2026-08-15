@@ -1,6 +1,8 @@
 # ReelSpot
 
-零依赖的浏览器录屏库 + DSH 对话界面插件。一键录制屏幕 / 窗口 / 标签页，输出 **MP4**（不支持时自动回退 WebM），支持**麦克风混音**和**光标跟随放大聚焦**。
+![ReelSpot banner](docs/banner.svg)
+
+零依赖的浏览器录屏库 + DSH 对话界面插件。一键录制屏幕 / 窗口 / 标签页，输出 **MP4**（不支持时自动回退 WebM，可一键转 MP4），支持**麦克风混音**、**光标跟随放大聚焦**、**光标高亮/点击波纹**、**摄像头气泡**、**倒计时**和**暂停/继续**。
 
 A zero-dependency browser screen recorder — one-click screen / window / tab capture with **MP4** output (WebM fallback), **microphone mixing**, and **cursor-follow zoom**. Ships as a plain JS library plus a plugin for the [DeepSeek Harness (DSH)](https://www.npmjs.com/package/@deepseek-ai/dsh) Web GUI.
 
@@ -11,10 +13,14 @@ A zero-dependency browser screen recorder — one-click screen / window / tab ca
 ## 特性 / Features
 
 - 🎥 **屏幕 / 窗口 / 标签页录制** — 基于 `getDisplayMedia` + `MediaRecorder`
-- 📼 **MP4 优先** — H.264 + AAC（Chrome/Edge 126+），自动回退 WebM（VP9/VP8 + Opus）
+- 📼 **MP4 优先** — H.264 + AAC（Chrome/Edge 126+），自动回退 WebM；回退时可一键 **ffmpeg 转 MP4**（Host 端）
 - 🎤 **麦克风混音** — `AudioContext` 将标签页/系统音频与麦克风混成一条音轨
 - 🔍 **放大聚焦** — canvas 实时管线：光标移动时平滑放大跟随（默认 1.8×），静止后缩回全景
-- 🧩 **两种形态** — 独立 JS 库（任何网页可用）+ DSH 动态 Cordis 插件（对话框右上角按钮）
+- 🖱️ **光标高亮 + 点击波纹** — 演示视频更清晰（仅录本标签页时跟踪光标）
+- 📹 **摄像头气泡** — Recordly 风格圆形 webcam 画中画（位置/大小可配）
+- ⏱️ **倒计时 + 暂停/继续** — 3-2-1 开录，录制中可暂停（时长统计扣除暂停段）
+- ⌨️ **快捷键** — `Alt+Shift+R` 开始/停止
+- 🧩 **两种形态** — 独立 JS 库（任何网页可用）+ DSH 插件（对话框右上角按钮；npx 持久安装或一句话动态试用）
 
 ## 浏览器限制 / Browser limitations
 
@@ -52,22 +58,30 @@ const recorder = ReelSpot.createRecorder(options?)
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
 | `mic` | `true` | 请求麦克风并混入 |
+| `webcam` | `false` | 摄像头气泡（圆形画中画） |
+| `webcamSize` | `0.18` | 气泡直径占画面宽度比例 |
+| `webcamPosition` | `'bottom-right'` | `bottom-right` / `bottom-left` / `top-right` / `top-left` |
+| `webcamMirror` | `true` | 摄像头镜像（自拍惯例） |
 | `zoom` | `false` | 启用光标跟随放大聚焦 |
 | `zoomFactor` | `1.8` | 放大倍数 |
 | `zoomIdleMs` | `2000` | 光标静止多久后缩回全景 |
+| `cursorFx` | `false` | 光标高亮圈 + 点击波纹 |
+| `countdown` | `3` | 开录前倒计时秒数（0 = 关闭） |
 | `frameRate` | `30` | 帧率 |
-| `maxWidth` | `1920` | 聚焦管线画布宽度上限 |
+| `maxWidth` | `1920` | 合成管线画布宽度上限 |
 | `videoBitsPerSecond` | `6000000` | 视频码率 |
 | `audioBitsPerSecond` | `192000` | 音频码率 |
 | `filePrefix` | `'reelspot'` | 生成文件名的前缀 |
 
 | 方法 / 事件 | 说明 |
 | --- | --- |
-| `start()` | 开始录制；resolve 为 `{ audioMode, zoomed, ext, mime }`，用户取消时 resolve `null` |
-| `stop()` | 停止；完成后触发 `'stop'` |
-| `getState()` | `'idle'` \| `'recording'` |
-| `on('stop', fn)` | `fn({ blob, size, name, ext, mime, audioMode, zoomed, startedAt, durationMs })` |
-| `on('state', fn)` | `fn('idle' \| 'recording')` |
+| `start()` | 开始录制；resolve 为 `{ audioMode, zoomed, webcam, ext, mime }`，用户取消选择器或倒计时 resolve `null` |
+| `stop()` | 停止；完成后触发 `'stop'`（倒计时中调用 = 取消） |
+| `pause()` / `resume()` | 暂停 / 继续录制 |
+| `getState()` | `'idle'` \| `'countdown'` \| `'recording'` \| `'paused'` |
+| `on('stop', fn)` | `fn({ blob, size, name, ext, mime, audioMode, zoomed, webcam, startedAt, durationMs })` |
+| `on('state', fn)` | `fn('idle' \| 'countdown' \| 'recording' \| 'paused')` |
+| `on('countdown', fn)` | `fn(剩余秒数)` — 3, 2, 1 |
 | `on('error', fn)` | 非致命错误（如麦克风被拒） |
 | `ReelSpot.isSupported()` | 当前浏览器是否支持录屏 |
 | `ReelSpot.pickFormat()` | 实际会使用的 `{ mime, ext }` |
@@ -117,7 +131,7 @@ cd open-dsh-plugins/reelspot
 > node build.mjs                 # 重新生成 dist/
 > ```
 
-安装后对话框（会话头部）右上角出现 **🔍 🎤 ● 录屏** 按钮组；停止录制后弹出预览面板，可播放、下载或保存到工作区 `recordings/` 目录。
+安装后对话框（会话头部）右上角出现 **🖱️ 🔍 📹 🎤 ● 录屏** 按钮组（光标特效 / 聚焦 / 摄像头 / 麦克风开关 + 录制），快捷键 `Alt+Shift+R` 开始/停止；录制中可 ⏸ 暂停。停止后弹出预览面板：播放、下载、保存到工作区 `recordings/`；WebM 录像（老浏览器）另有「转 MP4」按钮（需主机安装 ffmpeg，或设 `REELSPOT_FFMPEG` 环境变量）。
 
 ## 开发 / Development
 
