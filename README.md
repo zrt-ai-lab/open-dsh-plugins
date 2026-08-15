@@ -12,7 +12,12 @@ Open-source dynamic Cordis plugins for the DSH Web GUI. Each subdirectory is a s
 
 ## 安装方式 / Installation
 
-DSH 动态插件通过 Cordis 代理安装：在 DSH 会话中让代理读取插件目录下 `dist/` 的构建产物（`*.client.js` / `*.host.js`），分别作为 `cordis_define` 的 `code.client` / `code.host` 并运行即可。各插件的 README 有详细说明。
+```bash
+git clone https://github.com/zrt-ai-lab/open-dsh-plugins.git
+cd open-dsh-plugins
+```
+
+每个插件的 `dist/` 目录已包含构建产物，**无需运行任何构建命令**：在 DSH 会话中让 Cordis 代理读取插件 `dist/` 下的 `*.client.js` / `*.host.js`，分别作为 `cordis_define` 的 `code.client` / `code.host` 并运行即可。各插件子目录的 README 有详细说明。
 
 ## License
 

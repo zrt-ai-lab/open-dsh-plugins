@@ -78,11 +78,23 @@ const recorder = ReelSpot.createRecorder(options?)
 
 在 DSH 会话中让 Cordis 代理安装（或自行调用 `cordis_define`）：
 
+**安装不需要构建**——`dist/` 目录已包含构建产物，直接用即可：
+
 ```bash
-node build.mjs
-# 生成 dist/reelspot-dsh.client.js 和 dist/reelspot-dsh.host.js
-# 将两个文件内容分别作为 cordis_define 的 code.client / code.host
+git clone https://github.com/zrt-ai-lab/open-dsh-plugins.git
+cd open-dsh-plugins/reelspot
+# dist/reelspot-dsh.client.js -> cordis_define 的 code.client
+# dist/reelspot-dsh.host.js   -> cordis_define 的 code.host
 ```
+
+在 DSH 会话中让 Cordis 代理读取这两个文件并完成 `cordis_define` + `cordis_run`，或自行调用。
+
+> 只有**修改了 `src/` 源码**才需要重新构建（注意先 `cd` 到本目录再执行）：
+>
+> ```bash
+> cd open-dsh-plugins/reelspot   # 必须在 reelspot 目录内，否则会报 Cannot find module
+> node build.mjs                 # 重新生成 dist/
+> ```
 
 安装后对话框（会话头部）右上角出现 **🔍 🎤 ● 录屏** 按钮组；停止录制后弹出预览面板，可播放、下载或保存到工作区 `recordings/` 目录。
 
