@@ -21,6 +21,7 @@ const ReelSpot = (() => {
     zoomWheel: true,         // Alt+mouse-wheel adjusts the zoom factor live (1x = full view)
     zoomMax: 3.5,            // wheel-adjustable zoom ceiling
     zoomStep: 0.2,           // wheel step per notch
+    zoomMinimap: true,       // viewport minimap + factor badge while zoomed in
     cursorFx: false,         // cursor highlight ring + click ripples (this-tab only)
     countdown: 3,            // seconds before recording starts (0 = off)
     frameRate: 30,
@@ -118,7 +119,7 @@ const ReelSpot = (() => {
     }
 
     const st = {
-      zoom: 1, tzoom: 1, factor: opts.zoomFactor,
+      zoom: 1, tzoom: 1, factor: opts.zoomFactor, factorAt: 0,
       cx: w / 2, cy: h / 2, tx: w / 2, ty: h / 2,
       lastMove: 0, cursorX: null, cursorY: null, ripples: [],
     }
@@ -145,6 +146,7 @@ const ReelSpot = (() => {
       st.factor = Math.min(opts.zoomMax, Math.max(1, Math.round((st.factor + dir * opts.zoomStep) * 10) / 10))
       st.tzoom = st.factor
       st.lastMove = Date.now()
+      st.factorAt = Date.now()
     }
     const onDown = (ev) => {
       const [sx, sy] = toSource(ev)
@@ -210,6 +212,37 @@ const ReelSpot = (() => {
         g.lineWidth = Math.max(2, Math.round(diameter * 0.03))
         g.strokeStyle = 'rgba(255,255,255,.9)'
         g.stroke()
+      }
+
+      // zoom minimap: full-page thumbnail + viewport marker + factor badge,
+      // drawn while zoomed in so the operator (and viewers) can see which
+      // region of the page the video currently shows
+      if (opts.zoomMinimap && st.zoom > 1.02) {
+        const mw = Math.round(w * 0.14)
+        const mh = Math.round(h * 0.14)
+        const mm = Math.max(10, Math.round(mw * 0.18))
+        const mx = opts.webcamPosition === 'top-right' && camVideo ? mm : w - mm - mw
+        const my = mm
+        g.globalAlpha = 0.85
+        g.fillStyle = '#000'
+        g.fillRect(mx - 2, my - 2, mw + 4, mh + 4)
+        try { g.drawImage(video, mx, my, mw, mh) } catch (e) {}
+        g.globalAlpha = 1
+        g.lineWidth = 2
+        g.strokeStyle = 'rgba(255,255,255,.55)'
+        g.strokeRect(mx - 2, my - 2, mw + 4, mh + 4)
+        g.strokeStyle = 'rgba(255,213,74,.95)'
+        g.strokeRect(mx + (sx0 / w) * mw, my + (sy0 / h) * mh, (vw / w) * mw, (vh / h) * mh)
+        // factor badge, briefly after wheel adjustments
+        if (Date.now() - st.factorAt < 1500) {
+          const label = st.factor.toFixed(1) + '×'
+          g.font = 'bold ' + Math.max(14, Math.round(mw * 0.22)) + 'px system-ui, sans-serif'
+          const tw = g.measureText(label).width
+          g.fillStyle = 'rgba(0,0,0,.65)'
+          g.fillRect(mx + mw - tw - 14, my + mh - 26, tw + 12, 24)
+          g.fillStyle = '#ffd54a'
+          g.fillText(label, mx + mw - tw - 8, my + mh - 8)
+        }
       }
 
       // cursor fx: highlight ring + click ripples (mapped through the zoom transform)

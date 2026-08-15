@@ -15,7 +15,7 @@ A zero-dependency browser screen recorder — one-click screen / window / tab ca
 - 🎥 **屏幕 / 窗口 / 标签页录制** — 基于 `getDisplayMedia` + `MediaRecorder`
 - 📼 **MP4 优先** — H.264 + AAC（Chrome/Edge 126+），自动回退 WebM；回退时可一键 **ffmpeg 转 MP4**（Host 端）
 - 🎤 **麦克风混音** — `AudioContext` 将标签页/系统音频与麦克风混成一条音轨
-- 🔍 **放大聚焦** — canvas 实时管线：光标移动时平滑放大跟随（默认 1.8×），静止后缩回全景；录制中 **Alt+滚轮** 实时调倍数（1× = 整页全景，最高 3.5×）
+- 🔍 **放大聚焦** — canvas 实时管线：光标移动时平滑放大跟随（默认 1.8×），静止后缩回全景；录制中 **Alt+滚轮** 实时调倍数（1× = 整页全景，最高 3.5×），放大时右上角显示**取景小地图**（整页缩略 + 黄框标记当前取景范围 + 倍数角标）
 - 🖱️ **光标高亮 + 点击波纹** — 演示视频更清晰（仅录本标签页时跟踪光标）
 - 📹 **摄像头气泡** — Recordly 风格圆形 webcam 画中画（位置/大小可配）
 - ⏱️ **倒计时 + 暂停/继续** — 3-2-1 开录，录制中可暂停（时长统计扣除暂停段）
@@ -68,6 +68,7 @@ const recorder = ReelSpot.createRecorder(options?)
 | `zoomWheel` | `true` | Alt+滚轮实时调节放大倍数（1× = 整页全景） |
 | `zoomMax` | `3.5` | 滚轮可调的倍数上限 |
 | `zoomStep` | `0.2` | 滚轮每格步进 |
+| `zoomMinimap` | `true` | 放大时显示取景小地图（缩略图 + 视口框 + 倍数角标） |
 | `cursorFx` | `false` | 光标高亮圈 + 点击波纹 |
 | `countdown` | `3` | 开录前倒计时秒数（0 = 关闭） |
 | `frameRate` | `30` | 帧率 |
